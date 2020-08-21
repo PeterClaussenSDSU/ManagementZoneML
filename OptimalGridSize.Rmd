@@ -64,16 +64,14 @@ required.replicates <- function(Diff,CV,alpha=0.05,beta=0.20) {
 
 # Data
 
-We will use previously processed yield data (see `ProcessFiles.Rmd` and `CombiningMultipleYears.Rmd`). These data, comprising 5 years of harvest data from a single cropland over the period from 2013 to 2018 (excepting 2014), are saved in an R data file. We will be using `Yield` estimates in $bushels/acre$ and the associated spatial coordinates `Longitude` and `Latitude` in meters from the origin at the lower left corner of the cropland.
+We will use previously processed yield data (see `ProcessFiles.Rmd` and `CombiningMultipleYears.Rmd`). These data, comprising 5 years of harvest data from a single cropland over the period from 2013 to 2018 (excepting 2014), are saved in an R data file. We will be using `Yield` estimates in $bushels/acre$ and the associated spatial coordinates `Easting` and `Northing` in meters from the origin at the lower left corner of the cropland. `Easting` and `Northing` are metric projects derived from the original GPS latitude and longitude.
+
+
+We will start our analysis with the 2015 data. First, we can visualize this data set by first plotting points by geographic position.
 
 ```{r}
-load('home.squares.Rda')
-```
-
-We will start our analysis with the 2015 data. First, we can visualize this data set by first plotting points by longitude and latitude.
-
-```{r}
-plot(Latitude ~ Longitude, data=home.2015.dat,pch='.')
+home.2015.dat <- read.csv("./rectangles/home.2015.csv")
+plot(Northing ~ Easting, data=home.2015.dat,pch='.')
 ```
 
 # Assigning Grid Cells
@@ -81,13 +79,13 @@ plot(Latitude ~ Longitude, data=home.2015.dat,pch='.')
 It has been common practice when developing cropland management zones to create a common coordinate system that allow yield data from different growing seasons to be combined into a single standardized data set. This process usually involves assigning a system of grid cells to yield maps and to calculate the average of the yield samples that fall within a grid cell. (see https://openprairie.sdstate.edu/plant_faculty_pubs/148/ or https://www.sbreb.org/wp-content/uploads/2018/05/Yield-Mapping.pdf).
 
 
-For example, we might divide a cropland into four quadrants. This requires determining a mid-point for latitude and a mid-point for longitude. We are working with yield maps where the GPS coordinates have been converted to metric distance from a common origin, so for these data we can assume the lower left corner of the cropland is at $\{0,0\}$. 
+For example, we might divide a cropland into four quadrants. This requires determining a mid-point for `Northing` and a mid-point for `Easting`. We are working with yield maps where the GPS coordinates have been converted to metric distance from a common origin, so for these data we can assume the lower left corner of the cropland is at $\{0,0\}$. 
 
-For simplicity, we'll trim the data to lie within 400m latitude and 600 longitude of the origin.
+For simplicity, we'll trim the data to lie within 400m north and 600 meast of the origin.
 
 ```{r}
-home.2015.dat <- home.2015.dat[home.2015.dat$Latitude<=400,]
-home.2015.dat <- home.2015.dat[home.2015.dat$Longitude<=600,]
+home.2015.dat <- home.2015.dat[home.2015.dat$Northing<=400,]
+home.2015.dat <- home.2015.dat[home.2015.dat$Easting<=600,]
 ```
 
 We can determine row and column numbers, for a grid with 2 rows and 2 columns, by
@@ -96,10 +94,10 @@ We can determine row and column numbers, for a grid with 2 rows and 2 columns, b
 #define a range in case we have different field dimensions
 #although, to be completely generic, we should also account
 #for the lower bounds as well
-latRange <- 400
-lonRange <- 600
-home.2015.dat$Row <- ceiling(2*home.2015.dat$Latitude/latRange)
-home.2015.dat$Col <- ceiling(2*home.2015.dat$Longitude/lonRange)
+NorthingRng <- 400
+EastingRng <- 600
+home.2015.dat$Row <- ceiling(2*home.2015.dat$Northing/NorthingRng)
+home.2015.dat$Col <- ceiling(2*home.2015.dat$Easting/EastingRng)
 ```
 
 We use a common mapping idiom and create unique cell identifiers by multiplying row by 1000 and adding column. This provides a numeric value that retains some row-column information.
@@ -113,7 +111,7 @@ We visualize this by assigning colors for each unique grid cell number.
 ```{r}
 grid.colors <- cbPalette[1:4]
 names(grid.colors) <- unique(home.2015.dat$Cell)
-plot(Latitude ~ Longitude, data=home.2015.dat,col=grid.colors[as.character(home.2015.dat$Cell)])
+plot(Northing ~ Easting, data=home.2015.dat,col=grid.colors[as.character(home.2015.dat$Cell)])
 ```
 
 ## Power Calculations
@@ -159,8 +157,8 @@ for (i in 1:length(GridSummary$Divisions)) {
   #to an integer index by multiplying by the expected number of rows or
   #columns.
   div <- 2^i
-  home.2015.dat$Row <- ceiling(div*home.2015.dat$Latitude/latRange)
-  home.2015.dat$Col <- ceiling(div*home.2015.dat$Longitude/lonRange)
+  home.2015.dat$Row <- ceiling(div*home.2015.dat$Northing/NorthingRng)
+  home.2015.dat$Col <- ceiling(div*home.2015.dat$Easting/EastingRng)
   home.2015.dat$Cell <-home.2015.dat$Row*1000 + home.2015.dat$Col
 
   #number of samples per grid cell (assuming no NA values)
@@ -197,8 +195,8 @@ We have a minimum of 30 samples at 256 grid cells, so we would prefer no more th
 Now consider the sampling pattern. We assign 256 grid cells.
 
 ```{r}
-home.2015.dat$Row <- ceiling((2^4)*home.2015.dat$Latitude/latRange)
-home.2015.dat$Col <- ceiling((2^4)*home.2015.dat$Longitude/lonRange)
+home.2015.dat$Row <- ceiling((2^4)*home.2015.dat$Northing/NorthingRng)
+home.2015.dat$Col <- ceiling((2^4)*home.2015.dat$Easting/EastingRng)
 home.2015.dat$Cell <-home.2015.dat$Row*1000 + home.2015.dat$Col
 ```
 
@@ -208,7 +206,7 @@ and plot the sample points, coloring by cells.
 #assign a variable to create a checkerboard
 home.2015.dat$Check <- (home.2015.dat$Row+home.2015.dat$Col) %% 2 + 1
 grid.colors <- cbPalette[1:2]
-plot(Latitude ~ Longitude, data=home.2015.dat,col=grid.colors[home.2015.dat$Check])
+plot(Northing ~ Easting, data=home.2015.dat,col=grid.colors[home.2015.dat$Check])
 ```
 
 We also consider a smaller sampling region
@@ -217,7 +215,7 @@ We also consider a smaller sampling region
 grid.colors <- cbPalette[1:6]
 sub.dat <- home.2015.dat[home.2015.dat$Row<=2 & home.2015.dat$Col <= 3, ]
 names(grid.colors) <- unique(sub.dat$Cell)
-plot(Latitude ~ Longitude, data=sub.dat, col=grid.colors[sub.dat$Check])
+plot(Northing ~ Easting, data=sub.dat, col=grid.colors[sub.dat$Check])
 ```
 
 We note now that the sampling pattern is not uniform in rows and columns. This we can expect to be typical for yield monitor data. When harvesting, yield is collected from an area defined by the width of the combine header and by the distance traveled between samples. From these data, this is a very wide but shallow rectangle. Thus, our grid cells should have similar ratios of width to length.
@@ -239,8 +237,8 @@ GridSummary$Mean=NA       #mean of grid cell estimates
 GridSummary$SD=NA         #standard deviation of grid cell estimates
 
 for (i in 1:length(GridSummary$Rows)) {
-  home.2015.dat$Row <- ceiling(GridSummary$Rows[i]*home.2015.dat$Latitude/latRange)
-  home.2015.dat$Col <- ceiling(6*home.2015.dat$Longitude/lonRange)
+  home.2015.dat$Row <- ceiling(GridSummary$Rows[i]*home.2015.dat$Northing/NorthingRng)
+  home.2015.dat$Col <- ceiling(6*home.2015.dat$Easting/EastingRng)
   home.2015.dat$Cell <-home.2015.dat$Row*1000 + home.2015.dat$Col
 
   #number of samples per grid cell (assuming no NA values)
@@ -270,14 +268,14 @@ GridSummary[GridSummary$Rows %in% c(10,20,40),]
 We examine the sampling pattern with 20 rows:
 
 ```{r}
-home.2015.dat$Row <- ceiling(20*home.2015.dat$Latitude/latRange)
-home.2015.dat$Col <- ceiling(6*home.2015.dat$Longitude/lonRange)
+home.2015.dat$Row <- ceiling(20*home.2015.dat$Northing/NorthingRng)
+home.2015.dat$Col <- ceiling(6*home.2015.dat$Easting/EastingRng)
 home.2015.dat$Cell <-home.2015.dat$Row*1000 + home.2015.dat$Col
 
 #assign a variable to create a checkerboard
 home.2015.dat$Check <- (home.2015.dat$Row+home.2015.dat$Col) %% 2 + 1
 grid.colors <- cbPalette[1:2]
-plot(Latitude ~ Longitude, data=home.2015.dat,col=grid.colors[home.2015.dat$Check])
+plot(Northing ~ Easting, data=home.2015.dat,col=grid.colors[home.2015.dat$Check])
 ```
 
 We note that with 100m column width, we have 7 sample columns per grid cell column.
@@ -286,7 +284,7 @@ We note that with 100m column width, we have 7 sample columns per grid cell colu
 grid.colors <- cbPalette[1:6]
 sub.dat <- home.2015.dat[home.2015.dat$Row<=2 & home.2015.dat$Col <= 3, ]
 names(grid.colors) <- unique(sub.dat$Cell)
-plot(Latitude ~ Longitude, data=sub.dat, col=grid.colors[as.character(sub.dat$Cell)])
+plot(Northing ~ Easting, data=sub.dat, col=grid.colors[as.character(sub.dat$Cell)])
 ```
 
 # Grid dimensions over years
@@ -296,23 +294,17 @@ Before we make a final decision on appropriate grid dimensions for these data, w
 ```{r}
 fields <- vector(5, mode='list')
 years <- c(2013, 2015, 2016, 2017, 2018)
-fields[[1]] <- home.2013.dat
-fields[[2]] <- home.2015.dat
-fields[[3]] <- home.2016.dat
-fields[[4]] <- home.2017.dat
-fields[[5]] <- home.2018.dat
-
-# trim data
-for(i in 1:length(fields)) {
-  fields[[i]] <- fields[[i]][fields[[i]]$Latitude<=400,]
-  fields[[i]] <- fields[[i]][fields[[i]]$Longitude<=600,]
+for(i in 1:length(years)) {
+  fields[[i]] <- read.csv(file=paste("./rectangles/home",years[i],"csv",sep="."))
+  fields[[i]] <- fields[[i]][fields[[i]]$Northing<=400,]
+  fields[[i]] <- fields[[i]][fields[[i]]$Easting<=600,]
 }
 ```
 
 Define a one-shot utility function to help iterate over these croplands. We'll define default values for this set of data; perhaps we'll reuse this for other data sets.
 
 ```{r}
-sample.over.rows <- function(harvest.dat,range=c(6,40),columns=6,latRange=400,lonRange=600) {
+sample.over.rows <- function(harvest.dat,range=c(6,40),columns=6,NorthingRng=400,EastingRng=600) {
   rows <- 40
   GridSummary <- data.frame(Rows=6:rows)
   GridSummary$MinSamples=NA #Minimum number of samples
@@ -321,8 +313,8 @@ sample.over.rows <- function(harvest.dat,range=c(6,40),columns=6,latRange=400,lo
   GridSummary$SD=NA         #standard deviation of grid cell estimates
 
   for (i in 1:length(GridSummary$Rows)) {
-    harvest.dat$Row <- ceiling(GridSummary$Rows[i]*harvest.dat$Latitude/latRange)
-    harvest.dat$Col <- ceiling(6*harvest.dat$Longitude/lonRange)
+    harvest.dat$Row <- ceiling(GridSummary$Rows[i]*harvest.dat$Northing/NorthingRng)
+    harvest.dat$Col <- ceiling(6*harvest.dat$Easting/EastingRng)
     harvest.dat$Cell <-harvest.dat$Row*1000 + harvest.dat$Col
 
     #number of samples per grid cell (assuming no NA values)
@@ -417,11 +409,11 @@ par(mfrow=c(2,3))
 grid.colors <- cbPalette[1:2]
 for(i in 1:length(fields)) {
   CurrentSummary <- sample.over.rows(fields[[i]])
-  fields[[i]]$Row <- ceiling(20*fields[[i]]$Latitude/latRange)
-  fields[[i]]$Col <- ceiling(6*fields[[i]]$Longitude/lonRange)
+  fields[[i]]$Row <- ceiling(20*fields[[i]]$Northing/NorthingRng)
+  fields[[i]]$Col <- ceiling(6*fields[[i]]$Easting/EastingRng)
   fields[[i]]$Cell <-fields[[i]]$Row*1000 + fields[[i]]$Col
   fields[[i]]$Check <- (fields[[i]]$Row+fields[[i]]$Col) %% 2 + 1
-  plot(Latitude ~ Longitude, data=fields[[i]],col=grid.colors[fields[[i]]$Check],
+  plot(Northing ~ Easting, data=fields[[i]],col=grid.colors[fields[[i]]$Check],
        pch='.', main=paste('Grid',years[i]))
 }
 ```
@@ -432,7 +424,7 @@ par(mfrow=c(2,3))
 for(i in 1:length(fields)) {
   sub.dat <- fields[[i]][fields[[i]]$Row<=2 & fields[[i]]$Col <= 3, ]
   names(grid.colors) <- unique(sub.dat$Cell)
-  plot(Latitude ~ Longitude, data=sub.dat, col=grid.colors[as.character(sub.dat$Cell)],
+  plot(Northing ~ Easting, data=sub.dat, col=grid.colors[as.character(sub.dat$Cell)],
        main=paste('Grid',years[i]))
 }
 ```
