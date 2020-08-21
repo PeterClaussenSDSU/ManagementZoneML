@@ -1,0 +1,539 @@
+---
+title: "Normalization"
+output:
+  html_document: default
+  pdf_document: default
+bibliography: bibliography.bib
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+grey <- "#999999"
+orange <- "#E69F00"
+skyblue <- "#56B4E9"
+bluishgreen <- "#009E73"
+yellow <- "#F0E442"
+blue <- "#0072B2"
+vermillion <- "#D55E00"
+reddishpurple <- "#CC79A7"
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+# Overview
+
+To derive yield zone maps, we wish to pool yield data from a single cropland over multiple years. However, most croplands are managed using some form of crop rotation, and different crops can produce yields on dramatically different scales. Thus, we require some form  of normalization to convert yields to a common scale. For this, we will consider three simple normalization methods.
+
+Ultimately, we wish to use a yield map to delineate management zones. For example, we might limit the amount of inputs (i.e. fertilizers) in regions of cropland that are inherently low yielding or show high variability from year to year, instead preferring to allocate resources to high-yielding and stable portions of the field. Conversely, we may with to direct more in-season interventions (scouting, post-emergence treatments) to the parts of the field that have high variability or have been low yielding in the abscence of intervention. 
+
+There will be some risk associated with misclassification. We may waste resources on a low-yielding region that is classified as high-yielding, or fail to achieve high-yield in a region misclassified as low yielding. We will, then, compare management zone maps using different normalizations as a way to consider false discovery rates.
+
+
+## Notation
+
+Denote the $j^{th}$ Yield estimate for growing season (Year) $i$ as $y_{ij}$. We may typically assume that $i$ represents a fixed location in the cropland; where it is important to differentiate a sample with a physical index from a strictly sequential sample we will use the notation $y_{i(j)}$. 
+
+When only one variety is planted, we calculate sample mean and standard deviation for a single growing season (and typically a single crop) as
+
+$$
+\overline{y}_{i .} = \frac{\sum_{j=1}^{N_j} y_{ij}}{N_j}
+$$
+
+and 
+
+$$
+s_{i .} = \sqrt{\frac{\sum_{j=1}^{N_j} (y_{ij}-\overline{y}_{i .})^2}{N_j-1}}
+$$
+
+where $N_i$ are the number of `Yield` values for year $j$. 
+
+### Z-score
+
+If the yield estimates are approximately normal, we may replace $y_{ij}$ with 
+
+$$
+z_{ij} = \frac{y_{ij} -\overline{y}_{i .} }{s_{i .}}
+$$. 
+
+### CV
+
+We replace $y_ij$ with a percent [@cox-09-2007]
+
+$$
+100 \times \frac{y_{ij}}{\overline{y}_{i .}}
+$$ 
+
+### Rank
+
+Replace $y_{ij}$ with $r_{ij} = \text{rank}(y_{ij})$. 
+
+## Data
+
+For now, we use previously processed yield monitor data. Sample yield estimates, in bushels per acre, are individually associated with spatial coordinates. These data where originally geo-referenced with GPS coordinates, but have been anonymized by converting longitude and latitude to distances in meters, relative to an origin at the lower left corner. These values are given by `Northing` - moving from bottom to top - and `Easting` - moving left to right. Each yield sample has an associated time stamp, of the form `Year-Month-Day Hour:Minute:Second`. The data were also trimmed to exclude end rows and edge rows. The data have also been pre-screen to remove the more extreme outliers.
+
+## Combining yield over years
+
+Although each yield sample has a spatial coordinate, the same set of coordinates where not for each year. We will also need to define a common coordinate system. We will use a grid of equally sized rectangular cells, dividing the cropland into 20 rows and 6 columns, as described in [OptimalGridSize](OptimalGridSize.html) and calculate yield estimates $y_{ij}$ from the means of individual yield samples contained in the bounds of cells defined by this grid.
+
+For each grid cell $j$, we calculate a normalized mean and a standard deviation over the $N_i$ estimates, writing
+
+$$
+\overline{n}_{. j} = \frac{\sum_{i=1}^{N_i} n_{i j}}{N_i}
+$$
+
+and
+
+$$
+s_{. j} = \sqrt{\frac{\sum_{i=1}^{N_j} (n_{ij}-\overline{n}_{. j})^2}{N_i-1}}
+$$
+
+
+
+
+## Classification
+
+We will classify each grid cell according to the following criteria.
+
+If the mean normalized score for a grid cell is in the largest 25% percent of all cells, classify this as a `High` yielding cell. If the mean normalized score is in the smallest 25%, classify this cell as `Low` yielding. Otherwise, classify the cell as `Average` yield.
+
+Similarly, if the standard deviation of the normalized scores for a grid cell is in the largest 25% percent of all cells, classify this as an `Unstable` yielding cell. If the standard deviation of the normalized scores is in the smallest 25%, classify this cell as `Stable` yielding. Otherwise, classify the cell as `Average` yield.
+
+
+# Analysis
+
+We have 5 years in this data set and the files are named `home.*.csv`, so define a vector and we will be able to iterate over files.
+
+```{r}
+years <- c(2013,2015,2016,2017,2018)
+```
+
+We've previously defined grid dimensions, and we've trimmed these data to be 600 meters wide and 400 meters deep.
+
+```{r}
+rows <- 20
+columns <- 6
+northingRange <- 400
+eastingRange <- 600
+```
+
+## Screening data
+
+We tend to analyze yield data as if it were drawn from a single population, but it is not infrequent in practice to harvest cropland over multiple days. If the harvest period is short, we might assume samples come from something like a single population. For our first pass at screening the croplands, we will convert `TimeStamp` to date time instance and plot the range of values (we could also use something like min and max values, but plots will be more informative).
+
+```{r,fig.width=6,fig.height=5}
+par(mfrow=c(3,2))
+
+#save the data frames for later processing
+RawData <- vector(length(years),mode='list')
+idx <- 1
+for(year in years) {
+  harvest.dat <- read.csv(file=paste("./rectangles/home",year,"csv",sep="."))
+  harvest.dat$DateTime <- as.POSIXct(harvest.dat$TimeStamp, format = "%Y-%m-%d %H:%M:%S",tz = "America/Chicago")
+  plot(harvest.dat$DateTime)
+  harvest.dat$Year <- year
+  RawData[[idx]] <- harvest.dat
+  idx <- idx+1
+}
+```
+
+Four of the five croplands were harvested without minimal interruption, but the second cropland harvest took nearly a week. We will consider the historgram in more detail.
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(RawData[[2]], aes(Yield, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+tmp <- RawData[[2]]
+tmp$Day <- as.factor(as.POSIXlt(tmp$DateTime)$mday)
+ggplot(tmp, aes(Yield, ..density..)) + stat_bin(aes(fill=Day)) +
+scale_fill_manual(values=cbPalette) + facet_wrap(~ Day)
+tmp <- NULL
+```
+
+It's a little bit troubling, but no so much to reject the data set just yet. We'll compare with 1 and 3
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(RawData[[1]], aes(Yield, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(RawData[[3]], aes(Yield, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+tmp <- RawData[[3]]
+tmp$Day <- as.factor(as.POSIXlt(tmp$DateTime)$mday)
+ggplot(tmp, aes(Yield, ..density..)) + stat_bin(aes(fill=Day)) +
+scale_fill_manual(values=cbPalette) + facet_wrap(~ Day)
+tmp <- NULL
+```
+
+We won't worry much about normality at this point, since we will be pooling samples into grid cells before we normalize yields.
+
+
+# Combining Years
+
+We will proceed to build a combined data set. We will iterate over each raw data file, and for each
+
+- define rows and columns as [previously](OptimalGridSize.html)
+- identify unique grid cell and compute a pooled yield estimate for each; each grid cell will be taken to represent a single $y_{ij}$ as denoted above.
+- calculate mean $\overline{y}_{i .}$ and standard deviations $s_{i .}$ within year $i$.
+- calculate three normalized values
+    + `Z` $= \frac{y_{ij} -\overline{y}_{i .} }{s_{i .}}$
+
+    + `Percent` $= 100 \times \frac{y_{ij}}{\overline{y}_{i .}}$
+    + `Rank` = $= \text{rank}(y_{ij})$
+
+The combined data table will contain 600 rows, 120 rows representing each raw data file. This table will have columns `Year`, `Row`, `Col`, `Cell` and `Year` that represent pooled or summary values from the original data. This table will also have the normalized yield columns `Z`, `Percent` and `Rank`.
+
+```{r}
+GridCellYears <- c()
+#save aggregated data frames
+#AggregatedData <- vector(length(years),mode='list')
+
+idx <- 1
+for(harvest.dat in RawData) {
+  harvest.dat$Row <-  ceiling(rows*harvest.dat$Northing/northingRange)
+  harvest.dat$Col <-  ceiling(columns*harvest.dat$Easting/eastingRange)
+  harvest.dat$Cell <- harvest.dat$Row*1000 + harvest.dat$Col
+  
+  #cell pooled mean
+  harvest.means <- aggregate(Yield ~ Cell,data=harvest.dat,mean,na.rm=TRUE)
+  #save year
+  harvest.means$Year <- harvest.dat$Year[1]
+
+  #mean and standard deviation for normalizations
+  yield.mean <- mean(harvest.means$Yield,na.rm=TRUE)
+  yield.sd <- sd(harvest.means$Yield,na.rm=TRUE)
+
+  harvest.means$Z <- (harvest.means$Yield-yield.mean)/yield.sd
+  harvest.means$Percent <- 100*harvest.means$Yield/mean(harvest.means$Yield)
+  harvest.means$Rank <- rank(harvest.means$Yield)
+    
+  #AggregatedData[[idx]] <- harvest.means
+  
+  idx <- idx + 1
+  GridCellYears <- rbind(GridCellYears,harvest.means)
+}
+```
+
+## Check normality
+
+We should have approximately normal yield values
+
+```{r}
+GridCellYears$Year <- as.factor(GridCellYears$Year)
+ggplot(GridCellYears, aes(sample = Yield, col = Year)) +
+  stat_qq() + stat_qq_line() + facet_wrap(~ Year)
+```
+
+## Visualize Normalization
+
+We want to see how the different normalization methods map yield to normalized values. First, we'll create a pooled data table, then plot the three normalizations in a single graph.
+
+```{r}
+GridCellNorms <-  data.frame(Cell = rep(GridCellYears$Cell,3),
+                             Yield = rep(GridCellYears$Yield,3),
+                             Year = rep(GridCellYears$Year,3),
+                             Score = c(GridCellYears$Z,
+                                       GridCellYears$Percent,
+                                       GridCellYears$Rank),
+                             Method = c(rep('Z',length(GridCellYears$Z)),
+                                        rep('Percent',length(GridCellYears$Percent)),
+                                        rep('Rank',length(GridCellYears$Rank))))
+```
+
+```{r}
+ggplot(GridCellNorms, aes(Yield,Score)) + 
+geom_point(aes(colour = Year),size=.5) + ggtitle("Mapping Yield to Normalized Yield") +
+  scale_colour_manual(values=cbPalette) + facet_wrap(~ Method,nrow=3,scales="free_y")
+```
+
+All the normalizations preserve order, but not magnitude, of the individual grid cell yield estimates. Both `Z` and `Percent` are linear mappings; but `Percent` retains differences in variance (or the range of values) while `Z` scores have comparable ranges. `Rank` is not linear, with respect to `Yield`. While simple to compute, combined yield estimates over years base on `Percent` will likely to be sensitive to outliers. `Z` scores may be the most desirable if we want to base classification on mean and standard deviation over years, but may be sensitive to departures of normality in the original data. `Rank` and `Z` are likely to disagree with respect to classification.
+
+
+# Combining Years
+
+Now we have a collection, `GridCellYears` of normalized yield estimates ($n_{ij}$) for combination of year $i$ and grid cell $j$. We want to summarize normalized yield for each grid cell, reducing our data from 600 rows to 120; we will name the reduced table `GridCells`; this table will have only the columns `Row`, `Col` and `Cell` to index cells and the summary (mean) `Z`, `Percent` and `Rank`.
+
+```{r}
+GridCells <- aggregate(Z ~ Cell, data=GridCellYears, mean)
+GridCells$Percent <- aggregate(Percent ~ Cell, data=GridCellYears, mean)[,2]
+GridCells$Rank <- aggregate(Rank ~ Cell, data=GridCellYears, mean)[,2]
+#We'll use this later to map grid cell summaries to the original data
+row.names(GridCells) <- GridCells$Cell
+# and recover the original rows and columns
+GridCells$Col <- GridCells$Cell %% 1000
+GridCells$Row <- GridCells$Cell %/% 1000
+```
+
+Similarly, we will create a data table containing the standard deviations for each cell.
+
+```{r}
+GridCellsDeviations <- aggregate(Z ~ Cell, data=GridCellYears, sd)
+GridCellsDeviations$Percent <- aggregate(Percent ~ Cell, data=GridCellYears, sd)[,2]
+GridCellsDeviations$Rank <- aggregate(Rank ~ Cell, data=GridCellYears, sd)[,2]
+row.names(GridCellsDeviations) <- GridCells$Cell
+GridCells$Col <- GridCells$Cell %% 1000
+GridCells$Row <- GridCells$Cell %/% 1000
+```
+
+I would like to plot these data with the `heatmap` function, but I'll need to create a matrix. We can do this simply with the matrix function, but I want to confirm the dimensions, so a quick test (I'll eave it unevaluated in the typeset version)
+
+```{r,eval=FALSE}
+matrix(GridCells$Cell,ncol=6,byrow=TRUE)
+```
+
+## Means of Normalized Yields
+
+I want to suppress ordering on the margins, and I want a color palette that will contrast smaller values and larger values with distinct colors.
+
+```{r,fig.width=9,fig.height=5}
+par(mfrow=c(1,3))
+col<- colorRampPalette(c(cbPalette[5],cbPalette[1],cbPalette[6]))(dim(GridCells)[1])
+heatmap(matrix(GridCells$Z,ncol=6,byrow=TRUE),Rowv=NA,Colv=NA,col=col)
+heatmap(matrix(GridCells$Percent,ncol=6,byrow=TRUE),Rowv=NA,Colv=NA,col=col)
+heatmap(matrix(GridCells$Rank,ncol=6,byrow=TRUE),Rowv=NA,Colv=NA,col=col)
+```
+
+
+## Deviations of Normalized Yields
+
+Similarly, heat maps of the standard deviations.
+
+```{r,fig.width=9,fig.height=5}
+par(mfrow=c(1,3))
+heatmap(matrix(GridCellsDeviations$Z,ncol=6,byrow=TRUE),Rowv=NA,Colv=NA,col=col)
+heatmap(matrix(GridCellsDeviations$Percent,ncol=6,byrow=TRUE),Rowv=NA,Colv=NA,col=col)
+heatmap(matrix(GridCellsDeviations$Rank,ncol=6,byrow=TRUE),Rowv=NA,Colv=NA,col=col)
+```
+
+# Classification
+
+We have two tables corresponding to the grid cells, one of the means of normalized yields, one for standard deviations. We will want to classify cells into three classes, according to
+
+Quantile     | Mean Class | Deviation Class
+-------------|------------|-----------------
+$\le 25\%$   |      `Low` |      `Unstable`
+$(25\%, 75)$ |  `Average` |       `Average`
+$\ge 75\%$   |     `High` |        `Stable`
+
+We do this by first computing ranks for each normalized mean and standard deviation. We can create duplicates of the summary tables.
+
+```{r}
+GridCellRanks <- GridCells
+GridCellRanks$Z <- rank(GridCells$Z)
+GridCellRanks$Percent <- rank(GridCells$Percent)
+GridCellRanks$Rank <- rank(GridCells$Rank)
+
+GridCellDevRanks <- GridCellsDeviations
+GridCellDevRanks$Z <- rank(GridCellsDeviations$Z)
+GridCellDevRanks$Percent <- rank(GridCellsDeviations$Percent)
+GridCellDevRanks$Rank <- rank(GridCellsDeviations$Rank)
+```
+
+Before we move to classification, let's review ranks versus yield. Previously, we plotted rank within year, here, we want to visualize rank across years.
+
+```{r}
+GridCellNorms$Score <- c(rep(GridCells$Z,5),rep(GridCells$Percent,5),rep(GridCells$Rank,5))
+ggplot(GridCellNorms, aes(Yield,Score)) + 
+geom_point(aes(colour = Year),size=.5) + ggtitle("Mapping Yield to Mean Normalized Yield") +
+  scale_colour_manual(values=cbPalette) + facet_wrap(~ Method,nrow=3,scales="free_y")
+```
+
+Note that there appear to be a few outliers, particularly 2016, where the pooled yield is substantially different than the individual year yields. We would expect this to be reflected in the deviation estimates.
+
+```{r}
+GridCellNorms$Score <- c(rep(GridCellsDeviations$Z,5),rep(GridCellsDeviations$Percent,5),rep(GridCellsDeviations$Rank,5))
+ggplot(GridCellNorms, aes(Yield,Score)) + 
+geom_point(aes(colour = Year),size=.5) + ggtitle("Mapping Yield to Yield Deviation") +
+  scale_colour_manual(values=cbPalette) + facet_wrap(~ Method,nrow=3,scales="free_y")
+```
+
+Now we create classification tables from the ranks. First we define limits for ranks. We will assume any rank not above or below limits will be `Average`, this may result in more `Average` values than 50% of the cells, in the case of ties
+
+```{r}
+#utility function for three classes, assuming symmetric quantiles
+class.fn <- function(x,classes,quantile=0.25) {
+  lower.bound <- floor(quantile*length(x)[1])
+  upper.bound <- ceiling((1-quantile)*length(x)[1])
+  ifelse(x<lower.bound,classes[1],ifelse(x>upper.bound,classes[3],classes[2]))
+}
+GridCellClass <- GridCellRanks
+GridCellClass$Z <- class.fn(GridCellRanks$Z,classes=c('Low','Average','High'))
+GridCellClass$Percent <- class.fn(GridCellRanks$Percent,c('Low','Average','High'))
+GridCellClass$Rank <- class.fn(GridCellRanks$Rank,c('Low','Average','High'))
+
+GridCellDevClass <- GridCellDevRanks
+GridCellDevClass$Z <- class.fn(GridCellDevRanks$Z,c('Stable','Average','Unstable'))
+GridCellDevClass$Percent <- class.fn(GridCellDevRanks$Percent,c('Stable','Average','Unstable'))
+GridCellDevClass$Rank <- class.fn(GridCellDevRanks$Rank,c('Stable','Average','Unstable'))
+```
+
+How do ranks map to yield across years? Again, we visualize.
+
+```{r}
+GridCellNorms$Score <- c(rep(GridCellRanks$Z,5),rep(GridCellRanks$Percent,5),rep(GridCellRanks$Rank,5))
+ggplot(GridCellNorms, aes(Yield,Score)) + 
+geom_point(aes(colour = Year),size=.5) + ggtitle("Mapping Yield to Rank of Normalized Yield") +
+  scale_colour_manual(values=cbPalette) + facet_wrap(~ Method,nrow=3,scales="free_y")
+```
+
+
+Now to visualize rankings and assigned classes, as a check. Low ranks should be blue, high ranks should be red. I would include a legend, but it's somewhat inconvenient in base R and I would prefer to save the space.
+
+### Review Classification by Mean Yield
+
+```{r,fig.width=9,fig.height=5}
+col<-c(cbPalette[5],cbPalette[1],cbPalette[6])
+#map text to color
+names(col) <- c('Low','Average','High')
+par(mfrow=c(1,3))
+plot(GridCellClass$Col, GridCellClass$Row, type = "n", xlab = "Column", ylab = "Row", xlim=c(0,7), main='Classification by Z')
+text(GridCellClass$Col, GridCellClass$Row,labels = as.character(GridCellRanks$Z), col = col[GridCellClass$Z])
+plot(GridCellClass$Col, GridCellClass$Row, type = "n", xlab = "Column", ylab = "Row", xlim=c(0,7), main='Classification by Percent')
+text(GridCellClass$Col, GridCellClass$Row,labels = as.character(GridCellRanks$Percent), col = col[GridCellClass$Percent])
+plot(GridCellClass$Col, GridCellClass$Row, type = "n", xlab = "Column", ylab = "Row", xlim=c(0,7), main='Classification by Rank')
+text(GridCellClass$Col, GridCellClass$Row,labels = as.character(GridCellRanks$Rank), col = col[GridCellClass$Rank])
+```
+
+### Review Classification by Yield Deviation
+
+```{r,fig.width=9,fig.height=5}
+#map text to color
+names(col) <- c('Stable','Average','Unstable')
+par(mfrow=c(1,3))
+plot(GridCellClass$Col, GridCellClass$Row, type = "n", xlab = "Column", ylab = "Row",xlim=c(0,7), main='Classification by Z')
+text(GridCellClass$Col, GridCellClass$Row,labels = as.character(GridCellDevRanks$Z), col = col[GridCellDevClass$Z])
+plot(GridCellClass$Col, GridCellClass$Row, type = "n", xlab = "Column", ylab = "Row",xlim=c(0,7), main='Classification by Percent')
+text(GridCellClass$Col, GridCellClass$Row,labels = as.character(GridCellDevRanks$Percent), col = col[GridCellDevClass$Percent])
+plot(GridCellClass$Col, GridCellClass$Row, type = "n", xlab = "Column", ylab = "Row",xlim=c(0,7), main='Classification by Rank')
+text(GridCellClass$Col, GridCellClass$Row,labels = as.character(GridCellDevRanks$Rank), col = col[GridCellDevClass$Rank])
+```
+
+## Confusion Tables
+
+We wish to consider how frequently the classifications agree.
+
+```{r}
+table(GridCellClass$Z,GridCellClass$Percent)
+table(GridCellClass$Z,GridCellClass$Rank)
+table(GridCellClass$Rank,GridCellClass$Percent)
+
+table(GridCellDevClass$Z,GridCellDevClass$Percent)
+table(GridCellDevClass$Z,GridCellDevClass$Rank)
+table(GridCellDevClass$Rank,GridCellDevClass$Percent)
+```
+
+Yield classifications based on `Z` or `Rank` tend to agree, while `Percent` do classes do not. Yield deviations are must less likely to agree among the different normalization methods, compared to mean yield estimates.
+
+```{r,eval=FALSE}
+RankMeans$Ranked <- rank(RankMeans$Rank)
+RankSD <- aggregate(Rank ~ Cell,data=GridCellYears, sd)
+RankSD$Ranked <- rank(RankSD$Rank)
+
+ZScoresMeans <- aggregate(Z ~ Cell, data=GridCellYears, mean)
+ZScoresMeans$Ranked <- rank(ZScoresMeans$Z)
+ZScoresSD <- aggregate(Z ~ Cell, data=GridCellYears, sd)
+ZScoresSD$Ranked <- rank(ZScoresSD$Z)
+
+PercentMeans <- aggregate(Percent ~ Cell, data=GridCellYears, mean)
+PercentMeans$Ranked <- rank(PercentMeans$Percent)
+PercentSD <- aggregate(Percent~ Cell, data=GridCellYears, sd)
+PercentSD$Ranked <- rank(PercentSD$Percent)
+
+for(i in 1:dim(ZScoresMeans)[1] ) {
+  cell <- ZScoresMeans$Cell[i]
+  GridCellYears$ZRank[GridCellYears$Cell == cell] <- ZScoresMeans$Ranked[i]
+  GridCellYears$RRank[GridCellYears$Cell == cell] <- RankMeans$Ranked[i]
+  GridCellYears$PRank[GridCellYears$Cell == cell] <- PercentMeans$Ranked[i]
+}
+```
+
+
+# Zone Maps
+
+Finally, we will superimpose the classifications onto the original sample points. We only need to do this with one data set to produce a useable map, but I'd like to see how the grid cells line up with harvest patterns over different years.
+
+First, we pool the raw data into a single dat set, then map classification based on grid cells number.
+
+```{r}
+PooledData <- c()
+for(harvest.dat in RawData) {
+  PooledData <- rbind(PooledData,harvest.dat)
+}
+PooledData$Row <- ceiling(rows*PooledData$Northing/northingRange)
+PooledData$Col <- ceiling(columns*PooledData$Easting/eastingRange)
+PooledData$Cell <-PooledData$Row*1000 + PooledData$Col
+PooledData$Z <- GridCellClass[as.character(PooledData$Cell),'Z']
+PooledData$Percent <- GridCellClass[as.character(PooledData$Cell),'Percent']
+PooledData$Rank <- GridCellClass[as.character(PooledData$Cell),'Rank']
+```
+
+## Mean Yield Classification Maps
+
+```{r,fig.width=9,fig.height=5}
+ggplot(PooledData, aes(Easting,Northing)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_manual(values=cbPalette) +
+labs(colour = "Yield", x="X (m)", y="Y (m)") + facet_wrap(~ Year) + ggtitle("Mean Z-score Zones")
+```
+
+```{r,fig.width=9,fig.height=5}
+ggplot(PooledData, aes(Easting,Northing)) + 
+geom_point(aes(colour = Percent),size=.5) + 
+scale_colour_manual(values=cbPalette) +
+labs(colour = "Yield", x="X (m)", y="Y (m)") + facet_wrap(~ Year) + ggtitle("Mean Percent Zones")
+```
+
+```{r,fig.width=9,fig.height=5}
+ggplot(PooledData, aes(Easting,Northing)) + 
+geom_point(aes(colour = Rank),size=.5) + 
+scale_colour_manual(values=cbPalette) +
+labs(colour = "Yield", x="X (m)", y="Y (m)") + facet_wrap(~ Year) + ggtitle("Mean Rank Zones")
+```
+
+
+## Yield Deviation Classification Maps
+
+```{r}
+PooledData$Z <- GridCellDevClass[as.character(PooledData$Cell),'Z']
+PooledData$Percent <- GridCellDevClass[as.character(PooledData$Cell),'Percent']
+PooledData$Rank <- GridCellDevClass[as.character(PooledData$Cell),'Rank']
+```
+
+
+```{r,fig.width=9,fig.height=5}
+ggplot(PooledData, aes(Easting,Northing)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_manual(values=cbPalette) +
+labs(colour = "Yield", x="X (m)", y="Y (m)") + facet_wrap(~ Year) + ggtitle("Z-score Deviation Zones")
+```
+
+```{r,fig.width=9,fig.height=5}
+ggplot(PooledData, aes(Easting,Northing)) + 
+geom_point(aes(colour = Percent),size=.5) + 
+scale_colour_manual(values=cbPalette) +
+labs(colour = "Yield", x="X (m)", y="Y (m)") + facet_wrap(~ Year) + ggtitle("Percent Deviation Zones")
+```
+
+```{r,fig.width=9,fig.height=5}
+ggplot(PooledData, aes(Easting,Northing)) + 
+geom_point(aes(colour = Rank),size=.5) + 
+scale_colour_manual(values=cbPalette) +
+labs(colour = "Yield", x="X (m)", y="Y (m)") + facet_wrap(~ Year) + ggtitle("Rank Deviation Zones")
+```
+
+# Further Work
+
+Some rough notes of how to improve these analyses.
+
+- Can we provide better esimates by fitting to a trend surface then integrating, instead of pooling samples?
+- Can we provide over-all and point-wise classification error rates?
+- Fully rank-based classification vs parametric classification.
+
+# Bibilography
+
