@@ -1,0 +1,1745 @@
+---
+title: "Overview"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+#theme_set(theme_dag())
+#since we have k-fold cross validation
+
+set.seed(1000)
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggformula)
+library(GGally)
+library(ggdag)
+library(mgcv)
+library(bnlearn)
+
+  grey <- "#999999"
+  orange <- "#E69F00"
+  skyblue <- "#56B4E9"
+  bluishgreen <- "#009E73"
+  yellow <- "#F0E442"
+  blue <- "#0072B2"
+  vermillion <- "#D55E00"
+  
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+
+remove.harvest.outliers.fn <- function(tbl,rng=3) {
+  tbl <- tbl[!is.na(tbl$Yield),]
+  yield.mean <- mean(tbl$Yield)
+  yield.sd <- sd(tbl$Yield)
+  tbl <- tbl[tbl$Yield<=yield.mean+rng*yield.sd,]
+  tbl<- tbl[tbl$Yield>=yield.mean+rng-yield.sd,]
+  return(tbl)
+}
+remove.seed.outliers.fn <- function(tbl) {
+  tbl <- tbl[tbl$AppliedRate<=32000,]
+  tbl<- tbl[tbl$AppliedRate>=20000,]
+  return(tbl)
+}
+```
+
+# Background
+
+I assigned a project to a group of data science students. We have 5 data sets, each representing a single corn field. The data contain two columns of interest. `Yield` is measured in bushels per acre, while `ControlRate` is measured in seeds per acre. Each row in the file represents a geo-spatially tagged point located by `Easting` and `Northing`, measured in meters from the southwest corner of the field.
+
+```{r,fig.width=8,fig.height=4.5}
+aggregate.rates <- function(dat) {
+  dat$Rate <- 1000*round(dat$ControlRate/1000)
+  return(aggregate(Yield ~ Rate,data=dat,mean,na.rm=TRUE))
+}
+Rates.dat <- aggregate.rates(read.csv(file='./data/fieldA.csv'))
+Rates.dat$Field <- 'D'
+tmp <- aggregate.rates(read.csv(file='./data/fieldB.csv'))
+tmp$Field <- 'A'
+Rates.dat <- rbind(Rates.dat,tmp)
+tmp <- aggregate.rates(read.csv(file='./data/fieldC.csv'))
+tmp$Field <- 'C'
+Rates.dat <- rbind(Rates.dat,tmp)
+tmp <- aggregate.rates(read.csv(file='./data/fieldD.csv'))
+tmp$Field <- 'B'
+Rates.dat <- rbind(Rates.dat,tmp)
+ggplot(Rates.dat, aes(Rate,Yield,color=Field)) + scale_colour_manual(values=cbPalette) +
+geom_point(size=3) + geom_smooth(method = "lm", formula = y ~ poly(x, 3), se = FALSE)
+par(mfrow=c(2,2))
+plot(Northing ~ Easting, data=read.csv(file='./data/fieldA.csv'),main="D",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='./data/fieldB.csv'),main="A",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='./data/fieldC.csv'),main="C",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='./data/fieldD.csv'),main="B",pch='.')
+```
+
+```{r,fig.width=8,fig.height=4}
+aggregate.rates <- function(dat) {
+  dat$Rate <- 500*round(dat$ControlRate/500)
+  return(aggregate(Yield ~ Rate,data=dat,mean,na.rm=TRUE))
+}
+Rates.dat <- aggregate.rates(read.csv(file='./data/fieldA.csv'))
+Rates.dat$Field <- 'A'
+tmp <- aggregate.rates(read.csv(file='./data/fieldB.csv'))
+tmp$Field <- 'B'
+Rates.dat <- rbind(Rates.dat,tmp)
+tmp <- aggregate.rates(read.csv(file='./data/fieldC.csv'))
+tmp$Field <- 'C'
+Rates.dat <- rbind(Rates.dat,tmp)
+tmp <- aggregate.rates(read.csv(file='./data/fieldD.csv'))
+tmp$Field <- 'D'
+Rates.dat <- rbind(Rates.dat,tmp)
+ggplot(Rates.dat, aes(Rate,Yield,color=Field)) + scale_colour_manual(values=cbPalette) +
+geom_point(size=3) + geom_smooth(method = "lm", formula = y ~ poly(x, 3), se = FALSE)
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+fields <- vector(mode='list',length=5)
+Fields <- read.csv(file='./data/fieldA.csv')
+Fields$Field <- 'A'
+tmp <- read.csv(file='./data/fieldB.csv')
+tmp$Field <- 'B'
+Fields <- rbind(Fields,tmp)
+tmp <- read.csv(file='./data/fieldC.csv')
+tmp$Field <- 'C'
+Fields <- rbind(Fields,tmp)
+tmp <- read.csv(file='./data/fieldD.csv')
+tmp$Field <- 'D'
+Fields <- rbind(Fields,tmp)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+Fields$Field <- factor(Fields$Field)
+Fields$SeedingRate <- factor(ceiling(Fields$ControlRate/500)*500)
+ggplot(Fields, aes(SeedingRate, Yield,color=Field)) +
+  geom_boxplot(outlier.alpha = 0.0) +  scale_colour_manual(values=cbPalette) +facet_wrap(~ Field)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(Fields, aes(ControlRate, Yield,color=Field)) +
+  geom_boxplot(aes(group = cut_width(ControlRate, 500)), outlier.alpha = 0.1) +
+geom_jitter(width = 100,alpha=0.1,size=0.3) + facet_wrap(~Field) + scale_colour_manual(values=cbPalette)
+```
+
+
+# Introduction
+
+Suppose we have a yield map and a seeding map for a single field. The seeding map contains seeding rate estimates for discrete points in a crop land - say, a corn field, measured in seeds per acre. The yield map contains yield estimates, also associated with discrete points in a crop land, measured in bushels per acre. We wish to determine if there is a relationship between seeding rate and yield. 
+
+More specifically, suppose this cropland has been historically managed using uniform rate methods. Seeds were planted at a constant rate (say, 28000 seeds/acre) over the entire cropland. However, for on growing season, the farmer decided to try variable-rate seeding, and changed seeding rate over different regions of the field. Can we determine if there was a positive response to seeding rate? Alternatively, can we identify an optimal seeding rate for this cropland?
+
+
+# Data 
+
+We start with yield and seeding maps. Both include GPS coordinates with associated with either yield estimates, in bushels per acre in the case of yield maps and programmed seeding rate (`ControlRate`) and actual seeding rate (`AppliedRate`) in the case of seeding maps. The GPS coordinate where recorded as the position of the seeder or harvester at one second intervals during seeding or harvest. Since these are two distinct operations, yield sample points rarely coincide with seeding sample points. To measure correlations between seeding and yield require imputation to combine the data.
+
+In this document, we will consider two methods. In the simpler case, we impose a grid over the field and average over samples in grid cells (see `OptimalGridSize`). This has the advantage of being computationally simpler, but will be less precise. We also use inverse distance weighting (IDW) to map yield estimates to seed sample points. This may be more informative but is also noisier.
+
+
+
+## Load Data
+
+```{r,eval=TRUE}
+harvest.2013.dat <- read.csv(file='./data/A 2013 Soybeans Harvest.csv')
+harvest.2015.dat <- read.csv(file='./data/A 2015 Wheat Harvest.csv')
+harvest.2018.dat <- read.csv(file='./data/A 2018 Corn Harvest.csv')
+harvest.2016.dat <- read.csv(file='./data/A 2016 Corn Harvest.csv')
+harvest.2017.dat <- read.csv(file='./data/A 2017 Soybeans Harvest.csv')
+seed.2018.dat <-read.csv(file='./data/A 2018 Corn Seeding.csv')
+harvest.2019.dat <- read.csv(file='./data/A 2019 Soybeans Harvest.csv')
+seed.2020.dat <-read.csv(file='./data/A 2020 Corn Seeding.csv')
+```
+
+Screen for outliers.
+
+```{r}
+seed.2018.dat <- remove.seed.outliers.fn(seed.2018.dat)
+seed.2020.dat <- remove.seed.outliers.fn(seed.2020.dat)
+harvest.2019.dat <- remove.harvest.outliers.fn(harvest.2019.dat)
+harvest.2018.dat <- remove.harvest.outliers.fn(harvest.2018.dat)
+harvest.2017.dat <- remove.harvest.outliers.fn(harvest.2017.dat)
+harvest.2013.dat <- remove.harvest.outliers.fn(harvest.2013.dat)
+harvest.2015.dat <- remove.harvest.outliers.fn(harvest.2015.dat)
+harvest.2016.dat <- remove.harvest.outliers.fn(harvest.2016.dat)
+```
+
+
+
+```{r,eval=FALSE}
+harvest.2018.dat <- read.csv(file='./data/E 2018 Corn Harvest.csv')
+harvest.2016.dat <- read.csv(file='./data/E 2016 Corn Harvest.csv')
+harvest.2017.dat <- read.csv(file='./data/E 2017 Soybean Harvest.csv')
+seed.2018.dat <-read.csv(file='./data/E 2018 Corn Seeding.csv')
+```
+
+It is easier to visualize using ranks.
+
+```{r}
+harvest.2018.dat$YieldRank <- rank(harvest.2018.dat$Yield)
+harvest.2018.dat$YieldRank <- harvest.2018.dat$YieldRank/max(harvest.2018.dat$YieldRank)
+seed.2018.dat$RateRank <- rank(seed.2018.dat$ControlRate)
+seed.2018.dat$RateRank <- seed.2018.dat$RateRank/max(seed.2018.dat$RateRank)
+
+seed.2020.dat$RateRank <- rank(seed.2020.dat$ControlRate)
+seed.2020.dat$RateRank <- seed.2020.dat$RateRank/max(seed.2020.dat$RateRank)
+```
+
+Plot the seeding and yield maps for 2018
+
+```{r,fig.width=8,fig.height=4.5}
+Maps <- data.frame(Longitude=c(harvest.2018.dat$Longitude,seed.2018.dat$Longitude),
+                   Latitude=c(harvest.2018.dat$Latitude,seed.2018.dat$Latitude),
+                   Value=c(harvest.2018.dat$YieldRank,seed.2018.dat$RateRank),
+                   Map=c(rep('Yield',length(harvest.2018.dat$YieldRank)),
+                         rep('Seeding',length(seed.2018.dat$RateRank))))
+ggplot(Maps, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Seeding and Yield (2018)") + facet_wrap(~ Map)
+```
+
+How was yield rate determined? In this case, *ad-hoc* Rate was increased in areas where yield was estimated (from past experience) to be higher in the past; rate decreased in historically lower yield areas. So, it seems reasonable to compare with 2017 yield.
+
+```{r}
+harvest.2017.dat$YieldRank <- rank(harvest.2017.dat$Yield)
+harvest.2017.dat$YieldRank <- harvest.2017.dat$YieldRank/max(harvest.2017.dat$YieldRank)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+Maps <- data.frame(Longitude=c(harvest.2017.dat$Longitude,seed.2018.dat$Longitude),
+                   Latitude=c(harvest.2017.dat$Latitude,seed.2018.dat$Latitude),
+                   Value=c(harvest.2017.dat$YieldRank,seed.2018.dat$RateRank),
+                   Map=c(rep('Yield',length(harvest.2017.dat$YieldRank)),
+                         rep('Seeding',length(seed.2018.dat$RateRank))))
+ggplot(Maps, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Seeding (2018) and Yield (2017)") + facet_wrap(~ Map)
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+Maps <- data.frame(Longitude=c(harvest.2017.dat$Longitude,harvest.2018.dat$Longitude),
+                   Latitude=c(harvest.2017.dat$Latitude,harvest.2018.dat$Latitude),
+                   Value=c(harvest.2017.dat$YieldRank,harvest.2018.dat$YieldRank),
+                   Map=c(rep('Yield 2017',length(harvest.2017.dat$YieldRank)),
+                         rep('Yield 2018',length(harvest.2018.dat$YieldRank))))
+ggplot(Maps, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield 2017 and 2018") + facet_wrap(~ Map)
+```
+
+```{r,fig.width=6,fig.height=6}
+Maps <- data.frame(Longitude=c(harvest.2017.dat$Longitude,harvest.2018.dat$Longitude,seed.2018.dat$Longitude),
+                   Latitude=c(harvest.2017.dat$Latitude,harvest.2018.dat$Latitude,seed.2018.dat$Latitude),
+                   Value=c(harvest.2017.dat$YieldRank,harvest.2018.dat$YieldRank,seed.2018.dat$RateRank),
+                   Map=c(rep('Yield 2017',length(harvest.2017.dat$YieldRank)),
+                         rep('Yield 2018',length(harvest.2018.dat$YieldRank)),
+                         rep('Seeding 2018',length(seed.2018.dat$RateRank))))
+ggplot(Maps, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Correlation Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+# Spatial Analysis
+
+Since there is a spatial component, we'll start with a simplified spatial analysis. We'll divide the field into grid to map seeding data to yield data. 
+
+
+```{r,echo=FALSE}
+grid.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
+  harvest.dat$Row <- ceiling(harvest.dat$Latitude/grid.width[1])
+  harvest.dat$Column <- ceiling(harvest.dat$Longitude/grid.width[2])
+  return(harvest.dat)
+}
+aggregate.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
+  harvest.dat$Row <- ceiling(harvest.dat$Latitude/grid.width[1])
+  harvest.dat$Column <- ceiling(harvest.dat$Longitude/grid.width[2])
+  fmla <- as.formula(paste(response,'~ Row + Column'))
+  tmp <- aggregate(fmla,data=harvest.dat,FUN=FUN,na.rm=TRUE)
+  count <- aggregate(fmla,data=harvest.dat,FUN=length)
+  row.names(tmp) <- paste(tmp$Row,tmp$Column,sep=":")
+  tmp$Samples <- count[,3]
+  return(tmp)
+}
+```
+
+
+Aggregate field into grid cells, and remove this with fewer than 30 samples. We'll merge on seeding data.
+
+```{r}
+GridCells <- aggregate.field(seed.2018.dat,response='ControlRate')
+GridCells <- GridCells[GridCells$Samples>30,]
+#rename rate for simplicity
+names(GridCells)[3] <- 'R18'
+#and provide a relative rank
+GridCells$RR <- GridCells$R18/max(GridCells$R18)
+
+#Merge on row names, which will map to grid cell identifiers (row and column)
+grid.2018.dat <- aggregate.field(harvest.2018.dat,response='Yield')
+grid.2018.dat <- grid.2018.dat[grid.2018.dat$Samples>30,]
+GridCells$Y18 <- grid.2018.dat[row.names(GridCells),'Yield']
+
+#Since I create row names from row and column, we should be able to map yields correctly
+cells.2017.dat <- aggregate.field(harvest.2017.dat,response='Yield')
+GridCells$Y17 <- cells.2017.dat[row.names(GridCells),'Yield']
+
+GridCells$Q18 <- floor(rank(GridCells$Y18)/max(rank(GridCells$Y18))/5)
+GridCells$Q18[GridCells$Q18>5] = 5
+GridCells$Q18 <- factor(GridCells$Q18*20)
+
+tmp <- aggregate.field(seed.2020.dat,response='ControlRate')
+GridCells$R20 <- tmp[row.names(GridCells),'ControlRate']
+```
+
+Add relative ranks and plot.
+
+```{r,fig.width=8,fig.height=4.5}
+GridCells$Y18r <- rank(GridCells$Y18)/max(rank(GridCells$Y18))
+GridCells$Y17r <- rank(GridCells$Y17)/max(rank(GridCells$Y17))
+GridCells$R18r <- rank(GridCells$R18)/max(rank(GridCells$R18))
+
+GridMaps <- data.frame(Row=c(GridCells$Row,GridCells$Row,GridCells$Row),
+                   Column=c(GridCells$Column, GridCells$Column, GridCells$Column),
+                   Value=c(GridCells$Y18r,GridCells$Y17r,GridCells$R18r),
+                   Map=c(rep('Y18',length(GridCells$Y18r)),
+                         rep('Y17',length(GridCells$Y17r)),
+                         rep('R18',length(GridCells$R18r))))
+ggplot(GridMaps, aes(Column,Row)) + 
+geom_point(aes(colour = Value),size=3) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Grid Data") + facet_wrap(~ Map)
+```
+
+
+
+
+```{r,eval=FALSE}
+SeedMatrix <- matrix(0,nrow=max(GridCells$Row),ncol=max(GridCells$Column))
+YieldMatrix <- matrix(0,nrow=max(GridCells$Row),ncol=max(GridCells$Column))
+for(i in 1:max(GridCells$Row)) {
+  for(j in 1:max(GridCells$Column)) {
+      SeedMatrix[i,j] <- GridCells$R18[GridCells$Row==i & GridCells$Column==j]
+      YieldMatrix[i,j] <- GridCells$Y18[GridCells$Row==i & GridCells$Column==j]
+  }
+}
+
+col<- colorRampPalette(c(cbPalette[5],cbPalette[1],cbPalette[6]))(dim(GridCells)[1])
+par(mfrow=c(1,2))
+heatmap(t(SeedMatrix),Rowv=NA,Colv=NA,col=col)
+heatmap(t(YieldMatrix),Rowv=NA,Colv=NA,col=col)
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(GridCells, aes(R18, Y18)) +
+  geom_boxplot(aes(group = cut_width(R18, 500)), outlier.alpha = 0.1) +
+geom_jitter(width = 100,alpha=0.5)
+```
+
+
+Model 0
+
+$$
+Y18_i = R18_i+e_i
+$$
+
+# Model 1
+
+```{r}
+Model1.lm <- lm(Y18 ~ 0+ R18 + I(R18^2) + I(R18^3),data=GridCells)
+summary(Model1.lm)
+anova(Model1.lm)
+```
+
+
+# Model 2
+
+Consider adding yield from 2017 as a covariate - we are planting into the residuals from 2017.
+
+
+```{r}
+Model2.lm <- lm(Y18 ~ 0+Y17 + R18 + I(R18^2) + I(R18^3),data=GridCells)
+summary(Model2.lm)
+Model2.alt.lm <- lm(Y18 ~ 0+R18 + I(R18^2) + I(R18^3) + Y17,data=GridCells)
+summary(Model2.alt.lm)
+
+
+Model1.lm <- lm(Y18 ~ R18 + Y17, data=GridCells)
+Model2.lm <- lm(Y18 ~ R18 + R18:Y17, data=GridCells)
+Model3.lm <- lm(Y18 ~ R18 + Y17 + R18*Y17, data=GridCells)
+
+summary(Model2.lm)
+Model2.alt.lm <- lm(Y18 ~ Y17 + R18,data=GridCells)
+summary(Model2.alt.lm)
+Model2.2.lm <- lm(Y18 ~ Y17,data=GridCells)
+summary(Model2.2.lm)
+anova(Model2.2.lm)
+
+
+Model3.alt.lm <- lm(Y18 ~ Y17 + R18 + R18*Y17,data=GridCells)
+anova(Model2.lm)
+anova(Model2.alt.lm)
+anova(Model3.lm)
+anova(Model3.alt.lm)
+summary(Model3.lm)
+summary(Model3.alt.lm)
+
+AIC(Model1.lm,Model2.lm,Model3.lm)
+BIC(Model1.lm,Model2.lm,Model3.lm)
+```
+
+```{r}
+anova(Model1.lm,Model2.lm)
+AIC(Model1.lm)
+```
+
+Note that there is not a unique decomposition of the SS for this model. This suggests seeding rate and previous seasons yield are confounded (or correlated). We need to consider a possible causative relationship.
+
+
+```{r,fig.width=8,fig.height=4.5,eval=FALSE}
+
+#ggpairs(GridCells[,c('Y18','R18','Y17','Q18')], aes(color=Q18,alpha = 0.4))
+ggpairs(GridCells[,c('Y18','R18','Y17','Q18')], mapping = aes(color = Q18)) +
+  scale_fill_manual(values = cbPalette)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggpairs(GridCells[,c('Y18','R18','Y17')]) +
+  scale_fill_manual(values = cbPalette)
+```
+
+
+```{r}
+Model.rate.lm <- lm(R18 ~ Y17,data=GridCells)
+summary(Model.rate.lm)
+anova(Model.rate.lm)
+```
+
+In fact, there is a greater degree of correlation between `R18` and `Y17`.
+
+
+
+
+# DAG
+
+```{r}
+model1.dat <- GridCells[,c('Y18','R18','Y17')]
+boot.strength(GridCells[,c('Y18','R18','Y17')],algorithm='pc.stable')
+boot.strength(GridCells[,c('Y18','R18','Y17')], algorithm = "hc")
+boot.strength(GridCells[,c('Y18','R18','Y17')], algorithm = "gs")
+
+model1.dag <- model2network("[Y17][R18][Y18|R18:Y17]")
+model2.dag <- model2network("[Y17][R18|Y17][Y18|R18]")
+model3.dag <- model2network("[Y17][R18|Y17][Y18|R18:Y17]")
+graphviz.plot(model1.dag)
+graphviz.plot(model2.dag)
+graphviz.plot(model3.dag)
+
+#model1.dag
+fit1 = bn.fit(model1.dag, model1.dat)
+
+strength1 <- arc.strength(model1.dag, GridCells[,c('Y18','R18','Y17')])
+strength1
+strength.plot(model1.dag, strength1)
+#model2.dag
+
+fit2 = bn.fit(model2.dag, model1.dat)
+fit2
+
+strength2 <- arc.strength(model2.dag, model1.dat)
+strength2
+strength.plot(model2.dag, strength2)
+
+fit3 = bn.fit(model3.dag, model1.dat)
+fit3
+
+strength3 <- arc.strength(model3.dag, model1.dat)
+
+arc.strength(model3.dag, model1.dat)
+arc.strength(model3.dag, model1.dat, criterion = 'aic-g')
+arc.strength(model3.dag, model1.dat, criterion = 'bic-g')
+arc.strength(model3.dag, model1.dat, criterion = 'loglik-g')
+
+
+strength3
+strength.plot(model3.dag, strength3)
+
+bn.cv(model1.dat, model1.dag, algorithm.args = list(score = "aic"))
+bn.cv(model1.dat, model2.dag, algorithm.args = list(score = "aic"))
+bn.cv(model1.dat, model3.dag, algorithm.args = list(score = "aic"))
+
+bf.strength1 <- bf.strength(model1.dag, model1.dat)
+bf.strength2 <- bf.strength(model2.dag, model1.dat)
+bf.strength3 <- bf.strength(model3.dag, model1.dat)
+
+strength.plot(model1.dag, bf.strength1)
+strength.plot(model2.dag, bf.strength2)
+strength.plot(model3.dag, bf.strength3)
+
+averaged.network(bf.strength1)
+averaged.network(bf.strength2)
+averaged.network(bf.strength3)
+
+bf.strength1
+bf.strength2 
+bf.strength3
+
+score(model1.dag,model1.dat,type = 'aic-g')
+score(model2.dag,model1.dat,type = 'aic-g')
+score(model3.dag,model1.dat,type = 'aic-g')
+
+score(model1.dag,model1.dat,type = 'bic-g')
+score(model2.dag,model1.dat,type = 'bic-g')
+score(model3.dag,model1.dat,type = 'bic-g')
+
+score(model1.dag,model1.dat,type = 'loglik-g')
+score(model2.dag,model1.dat,type = 'loglik-g')
+score(model3.dag,model1.dat,type = 'loglik-g')
+
+score(model1.dag,model1.dat,type = 'bge')
+score(model2.dag,model1.dat,type = 'bge')
+score(model3.dag,model1.dat,type = 'bge')
+```
+
+
+```{r}
+learned.dag = iamb(GridCells[,c('Y18','R18','Y17')])
+graphviz.plot(learned.dag)
+graphviz.plot(pc.stable(GridCells[,c('Y18','R18','Y17')]))
+#learned.dag = set.arc(learned.dag, from = "Y17", to = "Y18")
+#learned.dag = set.arc(learned.dag, from = "R18", to = "Y18")
+#graphviz.plot(learned.dag)
+#fit1 = bn.fit(learned.dag, GridCells[,c('Y18','R18','Y17')])
+#fit1
+
+#learned.dag = set.arc(learned.dag, from = "Y17", to = "R18")
+#graphviz.plot(learned.dag)
+#fit1 = bn.fit(learned.dag, GridCells[,c('Y18','R18','Y17')])
+#fit1
+```
+
+
+# Model 4
+
+```{r}
+tmp <- aggregate.field(seed.2018.dat,response='AppliedRate')
+GridCells$AR18 <- tmp[row.names(GridCells),'AppliedRate']
+```
+
+
+```{r,fig.width=8,fig.height=4.5,eval=FALSE}
+ggpairs(GridCells[,c('Y18','R18','Y17','AR18','Q18')], mapping = aes(color = Q18)) +
+  scale_fill_manual(values = cbPalette)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggpairs(GridCells[,c('Y18','R18','Y17','AR18')]) +
+  scale_fill_manual(values = cbPalette)
+```
+
+```{r}
+model4.dag <- model2network("[Y17][R18|Y17][AR18|R18][Y18|AR18:Y17]")
+graphviz.plot(model4.dag)
+fit1 = bn.fit(model4.dag, GridCells[,c('Y18','R18','Y17','AR18')])
+fit1
+strength4 <- arc.strength(model4.dag, GridCells[,c('Y18','R18','Y17','AR18')])
+
+strength.plot(model4.dag, strength4)
+
+
+bf.strength4 <- bf.strength(model4.dag, GridCells[,c('Y18','R18','Y17','AR18')])
+strength.plot(model4.dag, bf.strength4)
+averaged.network(bf.strength4)
+plot(bf.strength4)
+
+strength4
+bf.strength4
+```
+
+```{r}
+Model4.lm <- lm(Y18 ~ R18 + Y17 + AR18,data=GridCells)
+summary(Model4.lm)
+anova(Model4.lm)
+
+Model4.1.lm <- lm(AR18 ~ R18,data=GridCells)
+summary(Model4.1.lm)
+
+Model4.2.lm <- lm(R18 ~ Y17,data=GridCells)
+summary(Model4.2.lm)
+
+Model4.3.lm <- lm(Y17 ~ 1,data=GridCells)
+summary(Model4.3.lm)
+
+Model4.4.lm <- lm(Y18 ~ AR18 + Y17,data=GridCells)
+summary(Model4.4.lm)
+```
+
+
+```{r}
+learned.dag = iamb(GridCells[,c('Y18','R18','Y17','AR18')])
+graphviz.plot(learned.dag)
+#learned.dag = set.arc(learned.dag, from = "Y17", to = "Y18")
+##learned.dag = set.arc(learned.dag, from = "Y17", to = "R18")
+#learned.dag = set.arc(learned.dag, from = "R18", to = "Y18")
+#graphviz.plot(learned.dag)
+#fit1 = bn.fit(learned.dag, GridCells[,c('Y18','R18','Y17')])
+#fit1
+```
+
+
+## Model 5 and 6
+
+We want to incorporate information about prior years' yields.
+
+```{r,fig.width=8,fig.height=4.5}
+harvest.2016.dat$YieldRank <- rank(harvest.2016.dat$Yield)
+harvest.2016.dat$YieldRank <- harvest.2016.dat$YieldRank/max(harvest.2016.dat$YieldRank)
+harvest.2015.dat$YieldRank <- rank(harvest.2015.dat$Yield)
+harvest.2015.dat$YieldRank <- harvest.2015.dat$YieldRank/max(harvest.2015.dat$YieldRank)
+harvest.2013.dat$YieldRank <- rank(harvest.2013.dat$Yield)
+harvest.2013.dat$YieldRank <- harvest.2013.dat$YieldRank/max(harvest.2013.dat$YieldRank)
+
+Maps5 <- data.frame(Longitude=c(harvest.2018.dat$Longitude,
+                                harvest.2017.dat$Longitude,
+                                harvest.2016.dat$Longitude,
+                                harvest.2015.dat$Longitude,
+                                seed.2018.dat$Longitude),
+                   Latitude=c(harvest.2018.dat$Latitude,
+                              harvest.2017.dat$Latitude,
+                              harvest.2016.dat$Latitude,
+                              harvest.2015.dat$Latitude,
+                              seed.2018.dat$Latitude),
+                   Value=c(harvest.2018.dat$YieldRank,
+                           harvest.2017.dat$YieldRank,
+                           harvest.2016.dat$YieldRank,
+                           harvest.2015.dat$YieldRank,
+                           seed.2018.dat$RateRank),
+                   Map=c(rep('Y18',length(harvest.2018.dat$YieldRank)),
+                         rep('Y17',length(harvest.2017.dat$YieldRank)),
+                         rep('Y16',length(harvest.2016.dat$YieldRank)),
+                         rep('Y15',length(harvest.2015.dat$YieldRank)),
+                         rep('R18',length(seed.2018.dat$RateRank))))
+ggplot(Maps5, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Multiple Years") + facet_wrap(~ Map)
+```
+
+
+
+
+```{r,fig.width=8,fig.height=4.5,eval=FALSE}
+
+
+model6_dag <- dagify(Y18 ~ AR18,
+       Y18 ~ Y17,
+       AR18 ~ R18,
+       R18 ~ RS,
+       Y18 ~ RS,
+       Y17 ~ Y16,
+       Y16 ~ Y15,
+       Y15 ~ RS,
+       Y16 ~ RS,
+       Y17 ~ RS,
+       labels = c("Y18" = "Yield\n 2018", 
+                  "R18" = "Control Rate",
+                  "Y17" = "Yield \n2017"),
+       latent = "RS",
+       #exposure = "smoking",
+       outcome = "Y18")
+#ggdag(model6_dag, text = TRUE, use_labels = "label")
+ggdag(model6_dag, text = TRUE)
+```
+
+
+```{r,fig.width=7,fig.height=5,eval=FALSE}
+harvest.2019.dat$YieldRank <- rank(harvest.2019.dat$Yield)
+harvest.2019.dat$YieldRank <- harvest.2019.dat$YieldRank/max(harvest.2019.dat$YieldRank)
+ggplot(harvest.2019.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = YieldRank),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue) +
+labs(colour = "Yield (Relative Rank)", x="Easting", y="Northing", title = "2019")
+```
+
+```{r}
+cells.2013.dat <- aggregate.field(harvest.2013.dat,response='Yield')
+cells.2015.dat <- aggregate.field(harvest.2015.dat,response='Yield')
+cells.2016.dat <- aggregate.field(harvest.2016.dat,response='Yield')
+
+cells.2019.dat <- aggregate.field(harvest.2019.dat,response='Yield')
+
+GridCells$Y13 <- cells.2013.dat[row.names(GridCells),'Yield']
+GridCells$Y15 <- cells.2015.dat[row.names(GridCells),'Yield']
+GridCells$Y16 <- cells.2016.dat[row.names(GridCells),'Yield']
+GridCells$Y19 <- cells.2019.dat[row.names(GridCells),'Yield']
+```
+
+
+```{r,fig.width=8,fig.height=4}
+ggpairs(GridCells[,c('Y18','AR18','R18','Y17','Y16','Y15')], aes(alpha = 0.4))
+```
+
+
+
+```{r}
+Model5.1.lm <- lm(AR18 ~ R18,data=GridCells)
+summary(Model5.1.lm)
+
+Model5.2.lm <- lm(R18 ~ Y15 + Y16 + Y17,data=GridCells)
+summary(Model5.2.lm)
+
+Model5.3.lm <- lm(Y15 ~ 1,data=GridCells)
+summary(Model5.3.lm)
+
+Model5.4.lm <- lm(Y16 ~ Y15,data=GridCells)
+summary(Model5.4.lm)
+
+Model5.5.lm <- lm(Y17 ~ Y16,data=GridCells)
+summary(Model5.5.lm)
+
+Model5.6.lm <- lm(Y18 ~ AR18 + Y17,data=GridCells)
+summary(Model5.6.lm)
+```
+
+```{r}
+model5.dat <- GridCells[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model5.dag <- model2network("[Y15][Y16|Y15][Y17|Y16][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17]")
+#graphviz.plot(model5.dag,layout = "dot")
+#graphviz.plot(model5.dag,layout = "fdp")
+graphviz.plot(model5.dag,layout = "circo")
+model5.fit = bn.fit(model5.dag, model5.dat)
+model5.fit
+#bn.fit.qqplot(model5.fit)
+strength5 <- arc.strength(model5.dag, model5.dat)
+
+strength.plot(model5.dag, strength5,layout = "circo")
+
+bf.strength5 <- bf.strength(model5.dag, model5.dat)
+
+strength.plot(model5.dag, bf.strength5)
+averaged.network(bf.strength5)
+plot(bf.strength5)
+
+strength5
+bf.strength5
+
+arc.strength(model5.dag, model5.dat, criterion = 'aic-g')
+
+```
+
+```{r}
+model6.dat <- GridCells[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model6.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15]")
+model6.dag
+model6.fit = bn.fit(model6.dag, model6.dat)
+model6.fit
+#bn.fit.qqplot(model6.fit)
+strength6 <- arc.strength(model6.dag, model6.dat)
+
+strength.plot(model6.dag, strength6)
+
+bf.strength6 <- bf.strength(model6.dag, model6.dat)
+
+strength.plot(model6.dag, bf.strength6)
+averaged.network(bf.strength6)
+plot(bf.strength6)
+
+strength6
+bf.strength6
+
+arc.strength(model6.dag, model6.dat, criterion = 'aic-g')
+
+bn.cv(model5.dat, model5.dag)
+bn.cv(model6.dat, model6.dag)
+
+
+score(model5.dag,model5.dat,type = 'bge')
+score(model5.dag,model5.dat,type = 'aic-g')
+score(model6.dag,model6.dat,type = 'bge')
+score(model6.dag,model6.dat,type = 'aic-g')
+
+BF(model5.dag, model6.dag, model6.dat)
+
+```
+
+```{r,eval=TRUE}
+#VarCorr(default.gam)
+#learned.dag = iamb(GridCells[,c('Y18',"R18","Y17","Y16","Y15")])
+learned.dag = iamb(GridCells[,c('Y18','AR18',"R18","Y17","Y16","Y15")])
+graphviz.plot(learned.dag)
+```
+
+```{r,eval=FALSE}
+# learned.dag = set.arc(learned.dag, from = "A", to = "O") 
+#learned.dag = drop.arc(learned.dag, from = "E", to = "O") 
+#learned.dag = reverse.arc(learned.dag, from = "R", to = "E")
+
+undirected.arcs(learned.dag)
+
+learned.fit = bn.fit(learned.dag, GridCells[,c('Y18',"R18","Y17","Y16","Y15","Y13")])
+learned.fit
+
+learned.dag = drop.arc(learned.dag, from = "Y18", to = "Y13")
+learned.dag = drop.arc(learned.dag, from = "Y15", to = "Y13")
+learned.dag = drop.arc(learned.dag, from = "Y16", to = "Y13")
+learned.dag = set.arc(learned.dag, from = "Y13", to = "Y17") 
+graphviz.plot(learned.dag)
+learned.fit = bn.fit(learned.dag, GridCells[,c('Y18',"R18","Y17","Y16","Y15","Y13")])
+learned.fit
+
+bn.fit.qqplot(learned.fit)
+bn.fit.histogram(learned.fit)
+bn.fit.xyplot(learned.fit)
+## for discrete (multinomial and ordinal) Bayesian networks.
+#bn.fit.barchart(learned.fit)
+#bn.fit.dotplot(learned.fit)
+```
+
+
+```{r,eval=TRUE}
+#VarCorr(default.gam)
+#learned.dag = iamb(GridCells[,c('Y18',"R18","Y17","Y16","Y15")])
+learned.dag = iamb(GridCells[,c('R20','Y19','Y18','AR18',"R18","Y17","Y16","Y15","Y13")])
+graphviz.plot(learned.dag)
+```
+
+# Repeat with ranks on yields
+
+```{r}
+GridRanks <- GridCells
+GridRanks$Y19 <- rank(GridCells$Y19)/max(rank(GridCells$Y19))
+GridRanks$Y18 <- rank(GridCells$Y18)/max(rank(GridCells$Y18))
+GridRanks$Y17 <- rank(GridCells$Y17)/max(rank(GridCells$Y17))
+GridRanks$Y16 <- rank(GridCells$Y16)/max(rank(GridCells$Y16))
+GridRanks$Y15 <- rank(GridCells$Y15)/max(rank(GridCells$Y15))
+GridRanks$Y13 <- rank(GridCells$Y13)/max(rank(GridCells$Y13))
+GridRanks$AR18 <- rank(GridCells$AR18)/max(rank(GridCells$AR18))
+GridCells$RS18 <- apply(GridRanks[,c('Y17','Y16','Y15','Y13')],1,mean)
+```
+
+
+```{r}
+model5.dat <- GridRanks[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model5.dag <- model2network("[Y15][Y16|Y15][Y17|Y16][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17]")
+#graphviz.plot(model5.dag,layout = "dot")
+#graphviz.plot(model5.dag,layout = "fdp")
+graphviz.plot(model5.dag,layout = "circo")
+model5.fit = bn.fit(model5.dag, model5.dat)
+model5.fit
+#bn.fit.qqplot(model5.fit)
+strength5 <- arc.strength(model5.dag, model5.dat)
+strength5
+strength.plot(model5.dag, strength5,layout = "circo")
+```
+
+
+```{r}
+model6.dat <- GridRanks[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model6.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15]")
+model6.dag
+model6.fit = bn.fit(model6.dag, model6.dat)
+model6.fit
+#bn.fit.qqplot(model6.fit)
+strength5 <- arc.strength(model6.dag, model6.dat)
+strength5
+strength.plot(model6.dag, strength5)
+
+bn.cv(model5.dat, model5.dag)
+bn.cv(model6.dat, model6.dag)
+```
+
+# Model 7 and  8
+
+Model a response surface
+```{r}
+model7.dat <- GridCells[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15','Y13','RS18')]
+model7.dag <- model2network("[Y13][Y15][RS18|Y13:Y15:Y16:Y17][Y16|Y15][Y17|Y16][R18|Y17:RS18][AR18|R18][Y18|AR18:Y17:RS18]")
+model7.dag
+model7.fit = bn.fit(model7.dag, model7.dat)
+model7.fit
+#bn.fit.qqplot(model6.fit)
+strength7 <- arc.strength(model7.dag, model7.dat)
+strength7
+strength.plot(model7.dag, strength7)
+
+model8.dat <- GridCells[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15','Y13')]
+model8.dag <- model2network("[Y15][Y13][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15:Y13][AR18|R18][Y18|AR18:Y17:Y16:Y15:Y13]")
+model8.dag
+model8.fit = bn.fit(model8.dag, model8.dat)
+model8.fit
+#bn.fit.qqplot(model6.fit)
+strength8 <- arc.strength(model8.dag, model8.dat)
+strength8
+strength.plot(model8.dag, strength8)
+
+bn.cv(model7.dat, model7.dag)
+bn.cv(model8.dat, model8.dag)
+```
+
+
+```{r}
+model5.rank.fit = bn.fit(model5.dag, GridRanks[,c('Y18','AR18',"R18","Y17",'Y16','Y15')])
+model5.rank.fit
+bn.fit.qqplot(model5.rank.fit)
+```
+
+```{r}
+learned.rank.dag = iamb(GridRanks[,c('Y18',"R18","Y17","Y16","Y15","Y13")])
+undirected.arcs(learned.rank.dag)
+graphviz.plot(learned.rank.dag)
+#learned.rank.fit = bn.fit(learned.rank.dag, mat)
+#learned.rank.fit
+```
+
+
+
+
+
+
+```{r,fig.width=8,fig.height=4}
+ggpairs(GridCells[,c('Y19','Y18','AR18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
+```
+
+
+```{r,fig.width=8,fig.height=4}
+ggpairs(GridCells[,c('R20','Y19','R18','Y18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
+```
+
+
+```{r}
+model9.dat <- GridCells[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18:Y17:Y16:Y15][R20|Y19:Y18:Y17:Y16:Y15]")
+
+model9.fit = bn.fit(model9.dag, model9.dat)
+model9.fit
+bn.fit.qqplot(model9.fit)
+strength9 <- arc.strength(model9.dag, model9.dat)
+strength9
+strength.plot(model9.dag, strength9)
+
+bf.strength9 <- bf.strength(model9.dag, model9.dat)
+bf.strength9
+strength.plot(model9.dag, bf.strength9)
+averaged.network(bf.strength9)
+plot(bf.strength9)
+
+```
+
+```{r,fig.width=8,fig.height=4.5}
+harvest.2016.dat$YieldRank <- rank(harvest.2016.dat$Yield)
+harvest.2016.dat$YieldRank <- harvest.2016.dat$YieldRank/max(harvest.2016.dat$YieldRank)
+harvest.2015.dat$YieldRank <- rank(harvest.2015.dat$Yield)
+harvest.2015.dat$YieldRank <- harvest.2015.dat$YieldRank/max(harvest.2015.dat$YieldRank)
+harvest.2013.dat$YieldRank <- rank(harvest.2013.dat$Yield)
+harvest.2013.dat$YieldRank <- harvest.2013.dat$YieldRank/max(harvest.2013.dat$YieldRank)
+
+harvest.2019.dat$YieldRank <- rank(harvest.2019.dat$Yield)
+harvest.2019.dat$YieldRank <- harvest.2019.dat$YieldRank/max(harvest.2019.dat$YieldRank)
+
+Maps4 <- data.frame(Longitude=c(#harvest.2018.dat$Longitude,
+                                harvest.2017.dat$Longitude,
+                                seed.2018.dat$Longitude,
+                                harvest.2019.dat$Longitude,
+                                seed.2020.dat$Longitude),
+                   Latitude=c(#harvest.2018.dat$Latitude,
+                              harvest.2017.dat$Latitude,
+                              seed.2018.dat$Latitude,
+                              harvest.2019.dat$Latitude,
+                              seed.2020.dat$Latitude),
+                   Value=c(#harvest.2018.dat$YieldRank,
+                           harvest.2017.dat$YieldRank,
+                           seed.2018.dat$RateRank,
+                           harvest.2019.dat$YieldRank,
+                           seed.2020.dat$RateRank),
+                   Map=c(#rep('Harvest 2018',length(harvest.2018.dat$YieldRank)),
+                         rep("Harvest 2017",length(harvest.2017.dat$YieldRank)),
+                         rep("Seed 2018",length(seed.2018.dat$RateRank)),
+                         rep('Harvest 2019',length(harvest.2019.dat$YieldRank)),
+                         rep('Seed 2020',length(seed.2020.dat$RateRank))))
+ggplot(Maps4, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps") + facet_wrap(~ Map)
+```
+
+# Proposed
+
+```{r,fig.width=8,fig.height=4.5}
+seed.2020.dat$Pass = floor(seed.2020.dat$Longitude/25)
+CR <- sample(unique(seed.2020.dat$Pass),10) 
+CR = 20 + 2*(1:5)
+seed.2020.dat$CR <- seed.2020.dat$Pass %in% CR
+seed.2020.dat$Proposed <- seed.2020.dat$ControlRate
+seed.2020.dat$Proposed[seed.2020.dat$CR] <- median(seed.2020.dat$ControlRate)
+
+seed.2020.dat$PS <- rank(seed.2020.dat$Proposed)
+seed.2020.dat$PS <- seed.2020.dat$PS/max(seed.2020.dat$PS)
+
+ggplot(seed.2020.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = PS),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps")
+
+Maps2 <- data.frame(Longitude=c(seed.2020.dat$Longitude,
+                                seed.2020.dat$Longitude),
+                   Latitude=c(seed.2020.dat$Latitude,
+                              seed.2020.dat$Latitude),
+                   Value=c(seed.2020.dat$RateRank,
+                           seed.2020.dat$PS),
+                   Map=c(rep('Actual 2020',length(seed.2020.dat$RateRank)),
+                         rep('Proposed 2020',length(seed.2020.dat$PS))))
+ggplot(Maps2, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Experimental Design") + facet_wrap(~ Map)
+
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+harvest.2016.dat$YieldRank <- rank(harvest.2016.dat$Yield)
+harvest.2016.dat$YieldRank <- harvest.2016.dat$YieldRank/max(harvest.2016.dat$YieldRank)
+harvest.2015.dat$YieldRank <- rank(harvest.2015.dat$Yield)
+harvest.2015.dat$YieldRank <- harvest.2015.dat$YieldRank/max(harvest.2015.dat$YieldRank)
+harvest.2013.dat$YieldRank <- rank(harvest.2013.dat$Yield)
+harvest.2013.dat$YieldRank <- harvest.2013.dat$YieldRank/max(harvest.2013.dat$YieldRank)
+
+harvest.2019.dat$YieldRank <- rank(harvest.2019.dat$Yield)
+harvest.2019.dat$YieldRank <- harvest.2019.dat$YieldRank/max(harvest.2019.dat$YieldRank)
+
+Maps4 <- data.frame(Longitude=c(#harvest.2018.dat$Longitude,
+                                harvest.2017.dat$Longitude,
+                                seed.2018.dat$Longitude,
+                                harvest.2019.dat$Longitude,
+                                seed.2020.dat$Longitude),
+                   Latitude=c(#harvest.2018.dat$Latitude,
+                              harvest.2017.dat$Latitude,
+                              seed.2018.dat$Latitude,
+                              harvest.2019.dat$Latitude,
+                              seed.2020.dat$Latitude),
+                   Value=c(#harvest.2018.dat$YieldRank,
+                           harvest.2017.dat$YieldRank,
+                           seed.2018.dat$RateRank,
+                           harvest.2019.dat$YieldRank,
+                           seed.2020.dat$RateRank),
+                   Map=c(#rep('Harvest 2018',length(harvest.2018.dat$YieldRank)),
+                         rep("Harvest 2017",length(harvest.2017.dat$YieldRank)),
+                         rep("Seed 2018",length(seed.2018.dat$RateRank)),
+                         rep('Harvest 2019',length(harvest.2019.dat$YieldRank)),
+                         rep('Seed 2020',length(seed.2020.dat$RateRank))))
+ggplot(Maps4, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps") + facet_wrap(~ Map)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(GridCells, aes(Y18,Y19)) + geom_point(aes(color=R18), size=3) + scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = mean(GridCells$R18)) +
+ geom_smooth(se=FALSE,method = 'lm',color=grey)
+```
+
+# Joining maps
+
+Since seeding and harvest are two independent operations (and, in this case, on two scale - one planter width is two combine widths) we need a method to merge to a common map. These can be
+
+- divide the field into grids with cells of sufficient size to sample a number of seeding and yield values.
+- interpolate seeding values onto each point on the yield map
+- interpolate harvest values onto each point of the seeding map
+
+```{r,echo=FALSE}
+library(gstat)
+krig.yield.fn <- function(harvest,seed,rng=40,locations=~Longitude+Latitude,idw=FALSE) {
+  harvest.var <- NULL
+  sph.vgm <- NULL
+  if(!idw) {
+      harvest.var <- variogram(Yield~1, locations=locations, 
+   data=harvest)
+    sph.vgm <- fit.variogram(harvest.var, vgm("Sph"))
+    seeding.krig <- krige(id="Yield", 
+                      formula=Yield~1, 
+                      locations=locations,
+                      data = harvest, 
+                      newdata = seed, 
+                      maxdist = rng,
+                      model=sph.vgm)
+    plot(gamma ~ dist, data=harvest.var,ylim=c(0,max(harvest.var$gamma)),col="blue")
+    abline(v=rng)
+      return(list(harvest.var=harvest.var,
+              sph.vgm=sph.vgm,
+              Yield=seeding.krig$Yield.pred))
+  } else {
+      seeding.krig <- idw(formula=Yield~1, 
+                      locations=~Longitude+Latitude,
+                      data = harvest, 
+                      newdata = seed, 
+                      maxdist = rng,
+                      idp=2)
+        return(list(harvest.var=harvest.var,
+              sph.vgm=sph.vgm,
+              Yield=seeding.krig$var1.pred))
+  }
+}
+
+```
+
+```{r,eval=FALSE}
+gs <- gstat(formula=Yield~1, locations=~Longitude+Latitude,data = harvest.2018.dat[,c("Yield","Longitude","Latitude")])
+idw <- interpolate(seed.2018.dat[,c("Longitude","Latitude")], gs)
+
+pred <- idw(Yield~1, harvest.2018.dat[,c("Yield","Longitude","Latitude")],seed.2018.dat[,c("Longitude","Latitude")],
+                   maxdist = 60, idp = 2)
+pred <- idw(id="Yield", 
+                      formula=Yield~1, 
+                      locations=~Longitude+Latitude,
+                      data = harvest.2018.dat[,c("Yield","Longitude","Latitude")], 
+                      newdata = seed.2018.dat[,c("Longitude","Latitude")], 
+                      maxdist = 60)
+res <- idw(
+                      formula=Yield~1, 
+                      locations=~Longitude+Latitude,
+                      data = harvest.2018.dat[,c("Yield","Longitude","Latitude")], 
+                      newdata = seed.2018.dat[,c("Longitude","Latitude")], 
+                      nmax = 60)
+```
+
+```{r}
+models.poly.lm <- vector(mode='list',length=8)
+poly.dat <- NULL
+for(i in 1:length(models.poly.lm)) {
+  tmp.dat <- harvest.2018.dat[,c('Longitude','Latitude','Yield')]
+  models.poly.lm[[i]] <- lm(Yield ~ polym(Longitude,degree=7+2*(i-1))*polym(Latitude,degree=7+2*(i-1)),
+                       data=tmp.dat)
+
+  tmp.dat$Yield <- predict(models.poly.lm[[i]])
+  tmp.dat$Degree = 7+2*(i-1)
+  poly.dat <- rbind(poly.dat, tmp.dat)
+ 
+}
+selection.dat <- data.frame(Degree = rep(7+2*(1:8-1),3),
+                            Criteria = as.factor(c(rep('logLik',8),
+                                                   rep('AIC',8),
+                                                   rep('BIC',8))),
+                            Score = c(unlist(lapply(models.poly.lm,logLik)),
+                                      unlist(lapply(models.poly.lm,AIC)),
+                                      unlist(lapply(models.poly.lm,BIC))))
+ggplot(selection.dat, aes(Degree,Score)) + 
+geom_point(aes(colour = Criteria),size=2) + 
+  geom_line(aes(colour = Criteria),size=1) + 
+ scale_colour_manual(values=cbPalette) + facet_wrap(~Criteria,nrow=3,scales="free_y")
+```
+
+
+
+```{r,fig.width=9,fig.height=6}
+ggplot(poly.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Yield),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue,midpoint = mean(poly.dat$Yield)) +
+#scale_colour_gradient(low=cbPalette[8], high=cbPalette[5]) +
+labs(colour = "Polynomial Models", x="Easting", y="Northing") + facet_wrap(~ Degree)
+```
+
+
+```{r}
+LOESS=FALSE
+if(LOESS) {
+  spans <- 2^(-6:-1)
+models.loess <- vector(mode='list',length=length(spans))
+loess.dat <- NULL
+idx <- 0
+for(span in spans) {
+  idx <- idx + 1
+  tmp.dat <- harvest.2018.dat[,c('Longitude','Latitude','Yield')]
+  
+  tmp.loess <- loess(Yield ~  Longitude*Latitude, span=span ,data=tmp.dat)
+  #tmp.loess <- locfit(Yield~ lp(Longitude,Latitude,nn=span,scale=0), data=tmp.dat)
+  #note - locfit has reduced dimension
+  tmp.dat$Yield <- predict(tmp.loess,newdata=tmp.dat)
+  tmp.dat$Span = span
+  loess.dat <- rbind(loess.dat, tmp.dat)
+  models.loess[[idx]] <- tmp.loess
+
+ # plot(tmp.loess)
+}
+}
+
+```
+
+```{r,eval=FALSE}
+library(locfit)
+selection.dat <- data.frame(Span = rep(spans,2),
+                            Criteria = as.factor(c(
+                                                   rep('AIC',length(spans)),
+                                                   rep('gcv',length(spans)))),
+                            Score = c(
+                                      unlist(lapply(models.loess,function(x){aic(x)[4]})),
+                                      unlist(lapply(models.loess,function(x){gcv(x)[4]}))))
+#gcv cross validation for locfit objects
+ggplot(selection.dat, aes(Span,Score)) + 
+geom_point(aes(colour = Criteria),size=2) + 
+  geom_line(aes(colour = Criteria),size=1) + 
+ scale_colour_manual(values=cbPalette) + facet_wrap(~Criteria,nrow=2,scales="free_y")
+```
+
+```{r,fig.width=9,fig.height=6}
+if(LOESS) {
+#loess.dat <- rbind(loess.dat, tmp.dat)
+
+ggplot(loess.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Yield),size=1) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue,midpoint = mean(loess.dat$Yield)) +
+#scale_colour_gradient(low=cbPalette[8], high=cbPalette[5]) +
+labs(colour = "LOESS", x="Easting", y="Northing") + facet_wrap(~ Span)
+}
+```
+
+Use GAM to estimate yields and map to seeding maps
+```{r}
+
+require(mgcv)
+k=40
+s=2^(-5)
+useGAM = FALSE
+#nearly every path is significant
+KRIG = TRUE
+LM = FALSE
+d=21
+if(useGAM) {
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2018.dat)
+  seed.2018.dat$Y18 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2017.dat)
+  seed.2018.dat$Y17 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2016.dat)
+  seed.2018.dat$Y16 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2015.dat)
+  seed.2018.dat$Y15 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2013.dat)
+  seed.2018.dat$Y13 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+  
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2019.dat)
+  seed.2018.dat$Y19 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+  
+  b1 <- gam(ControlRate ~ s(Longitude,Latitude,k=k),data=seed.2020.dat)
+  seed.2018.dat$R20 <- predict(b1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+  
+} else {
+  if(LM) {
+
+  l1 <- lm(Yield ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=harvest.2018.dat)
+  seed.2018.dat$Y18 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  l1 <- lm(Yield ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=harvest.2017.dat)
+  seed.2018.dat$Y17 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  l1 <- lm(Yield ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=harvest.2016.dat)
+  seed.2018.dat$Y16 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  l1 <- lm(Yield ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=harvest.2015.dat)
+  seed.2018.dat$Y15 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+
+  l1 <- lm(Yield ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=harvest.2013.dat)
+  seed.2018.dat$Y13 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+  
+  l1 <- lm(Yield ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=harvest.2019.dat)
+  seed.2018.dat$Y19 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+  
+  l1 <- lm(ControlRate ~ polym(Longitude,degree=d)*polym(Latitude,degree=d),data=seed.2020.dat)
+  seed.2018.dat$R20 <- predict(l1,newdata=seed.2018.dat[,c("Longitude","Latitude")])
+  
+      
+  } else {
+    IDW=TRUE
+    if(KRIG) {
+      krig <- krig.yield.fn(harvest.2018.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$Y18 <- krig$Yield
+
+      krig <- krig.yield.fn(harvest.2017.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$Y17 <- krig$Yield
+      
+      krig <- krig.yield.fn(harvest.2016.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$Y16 <- krig$Yield
+      
+      krig <- krig.yield.fn(harvest.2015.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$Y15 <- krig$Yield
+
+      krig <- krig.yield.fn(harvest.2013.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$Y13 <- krig$Yield
+      
+      krig <- krig.yield.fn(harvest.2019.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$Y19 <- krig$Yield
+      tmp <- seed.2020.dat[,c("ControlRate","Longitude","Latitude")]
+      tmp$Yield <- tmp$ControlRate
+      krig <- krig.yield.fn(tmp,
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=40,idw=IDW)
+      seed.2018.dat$R20 <- krig$Yield
+      
+    } else {
+      tmp.loess <- loess(Yield ~  Longitude*Latitude, span=s ,data=harvest.2018.dat)
+  seed.2018.dat$Y18 <- predict(tmp.loess,newdata=seed.2018.dat)
+
+  tmp.loess <- loess(Yield ~  Longitude*Latitude, span=s ,data=harvest.2017.dat)
+  seed.2018.dat$Y17 <- predict(tmp.loess,newdata=seed.2018.dat)
+  
+  tmp.loess <- loess(Yield ~  Longitude*Latitude, span=s ,data=harvest.2016.dat)
+  seed.2018.dat$Y16 <- predict(tmp.loess,newdata=seed.2018.dat)
+  
+  tmp.loess <- loess(Yield ~  Longitude*Latitude, span=s ,data=harvest.2015.dat)
+  seed.2018.dat$Y15 <- predict(tmp.loess,newdata=seed.2018.dat)
+  
+  tmp.loess <- loess(Yield ~  Longitude*Latitude, span=s ,data=harvest.2013.dat)
+  seed.2018.dat$Y13 <- predict(tmp.loess,newdata=seed.2018.dat)
+  
+  tmp.loess <- loess(Yield ~  Longitude*Latitude, span=s ,data=harvest.2019.dat)
+  seed.2018.dat$Y19 <- predict(tmp.loess,newdata=seed.2018.dat)
+    }
+    
+  }
+  
+}
+
+seed.2018.dat$R18 <- seed.2018.dat$ControlRate
+seed.2018.dat$AR18 <- seed.2018.dat$AppliedRate
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+map.dat <- seed.2018.dat
+map.dat$Y19 <- rank(map.dat$Y19)
+map.dat$Y19 <- map.dat$Y19/max(map.dat$Y19)
+map.dat$Y18 <- rank(map.dat$Y18)
+map.dat$Y18 <- map.dat$Y18/max(map.dat$Y18)
+map.dat$Y17 <- rank(map.dat$Y17)
+map.dat$Y17 <- map.dat$Y17/max(map.dat$Y17)
+
+map.dat$Y16 <- rank(map.dat$Y16)
+map.dat$Y16 <- map.dat$Y16/max(map.dat$Y16)
+map.dat$Y15 <- rank(map.dat$Y15)
+map.dat$Y15 <- map.dat$Y15/max(map.dat$Y15)
+map.dat$Y13 <- rank(map.dat$Y13)
+map.dat$Y13 <- map.dat$Y13/max(map.dat$Y13)
+
+Maps6 <- data.frame(Longitude=c(map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude),
+                   Latitude=c(map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude),
+                   Value=c(map.dat$Y19,
+                           map.dat$Y18,
+                           map.dat$Y17,
+                           map.dat$Y16,
+                           map.dat$Y15,
+                           map.dat$Y13),
+                   Map=c(rep(2019,length(map.dat$Y19)),
+                         rep(2018,length(map.dat$Y18)),
+                         rep(2017,length(map.dat$Y17)),
+                         rep(2016,length(map.dat$Y16)),
+                         rep(2015,length(map.dat$Y15)),
+                         rep(2013,length(map.dat$Y13))))
+ggplot(Maps6, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Multiple Years") + facet_wrap(~ Map)
+```
+
+```{r,fig.width=12,fig.height=6}
+ggpairs(seed.2018.dat[,c('Y18','R18','AR18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
+```
+
+```{r,fig.width=12,fig.height=6}
+ggpairs(seed.2018.dat[,c('Y19','Y18','R18','AR18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
+```
+
+```{r,fig.width=12,fig.height=6}
+ggpairs(seed.2018.dat[,c('R20','Y19','Y18','R18','AR18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
+```
+
+
+```{r}
+model5.dat <- seed.2018.dat[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model5.dag <- model2network("[Y15][Y16|Y15][Y17|Y16][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17]")
+#graphviz.plot(model5.dag,layout = "dot")
+#graphviz.plot(model5.dag,layout = "fdp")
+graphviz.plot(model5.dag,layout = "circo")
+model5.fit = bn.fit(model5.dag, model5.dat)
+model5.fit
+#bn.fit.qqplot(model5.fit)
+strength5 <- arc.strength(model5.dag, model5.dat)
+
+strength.plot(model5.dag, strength5,layout = "circo")
+
+bf.strength5 <- bf.strength(model5.dag, model5.dat)
+
+strength.plot(model5.dag, bf.strength5)
+averaged.network(bf.strength5)
+plot(bf.strength5)
+
+strength5
+bf.strength5
+```
+
+```{r}
+model6.dat <- seed.2018.dat[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model6.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15]")
+model6.dag
+model6.fit = bn.fit(model6.dag, model6.dat)
+model6.fit
+#bn.fit.qqplot(model6.fit)
+strength6 <- arc.strength(model6.dag, model6.dat)
+
+strength.plot(model6.dag, strength6)
+
+bf.strength6 <- bf.strength(model6.dag, model6.dat)
+
+strength.plot(model6.dag, bf.strength6)
+averaged.network(bf.strength6)
+plot(bf.strength6)
+
+strength6
+bf.strength6
+
+bn.cv(model5.dat, model5.dag)
+bn.cv(model6.dat, model6.dag)
+```
+
+```{r,eval=TRUE}
+#VarCorr(default.gam)
+#learned.dag = iamb(GridCells[,c('Y18',"R18","Y17","Y16","Y15")])
+learned.dag = iamb(GridCells[,c('Y18','AR18',"R18","Y17","Y16","Y15","Y13")])
+graphviz.plot(learned.dag)
+```
+
+```{r}
+model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18][R20|Y19:Y18:Y17:Y16:Y15]")
+
+model9.fit = bn.fit(model9.dag, seed.2018.dat[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')])
+model9.fit
+bn.fit.qqplot(model9.fit)
+strength9 <- arc.strength(model9.dag, seed.2018.dat[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')])
+strength9
+strength.plot(model9.dag, strength9)
+```
+
+
+```{r,eval=TRUE}
+#VarCorr(default.gam)
+#learned.dag = iamb(GridCells[,c('Y18',"R18","Y17","Y16","Y15")])
+learned.dag = iamb(seed.2018.dat[,c('R20','Y19','Y18','AR18',"R18","Y17","Y16","Y15","Y13")])
+graphviz.plot(learned.dag)
+```
+
+
+
+```{r,KrigHome,fig.width=6,fig.height=4,eval=FALSE}
+home.2017.krig <- krig.yield.fn(harvest.2017.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=20,idw=!krig)
+home.krig <- krig.yield.fn(harvest.2018.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=20,idw=!krig)
+home.2016.krig <- krig.yield.fn(harvest.2016.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=20,idw=!krig)
+seed.2018.dat$Y17 <- home.2017.krig$Yield
+seed.2018.dat$Y18 <- home.krig$Yield
+
+if(!file.exists("home.Rda")) {
+  home.krig <- krig.yield.fn(harvest.2018.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=60)
+  home.2016.krig <- krig.yield.fn(harvest.2016.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=60)
+  save(home.krig,home.2016.krig,file="home.Rda")
+}
+
+load(file="home.Rda")
+ # plot(gamma ~ dist, data=home.krig$harvest.var,
+#       ylim=c(0,max(home.krig$harvest.var$gamma)),col="blue")
+ # abline(v=60)
+```
+
+
+# 2019 Response
+
+```{r,fig.width=8,fig.height=4.5}
+GridLong <- reshape(GridCells, 
+  varying = c('Y18','Y17','Y16','Y15','Y13','Y19'), 
+  v.names = "Yield",
+  timevar = "Year", 
+  times = c(2018,2017,2016,2015,2013,2019), 
+  direction = "long")
+plot(Yield~Column,data=GridLong)
+GridLong$Year <- factor(GridLong$Year)
+ggplot(GridLong, aes(Column,Yield,color=Year)) + scale_colour_manual(values=cbPalette) +
+geom_point(size=2) + geom_smooth(se = FALSE)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+GridRankLong <- reshape(GridRanks, 
+  varying = c('Y18','Y17','Y16','Y15','Y13','Y19'), 
+  v.names = "Yield",
+  timevar = "Year", 
+  times = c(2018,2017,2016,2015,2013,2019), 
+  direction = "long")
+plot(Yield~Column,data=GridLong)
+GridRankLong$Year <- factor(GridRankLong$Year)
+ggplot(GridRankLong, aes(Column,Yield,color=Year)) + scale_colour_manual(values=cbPalette) +
+geom_point(size=2) + geom_smooth(se = FALSE)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+GridRankLong$Pass <- factor(floor(GridRankLong$Column/4))
+ggplot(GridRankLong, aes(Pass, Yield,color=Year)) +
+  geom_boxplot(aes(color = Year), outlier.alpha = 0.4) + geom_smooth(se = FALSE)
+#geom_jitter(width = 2,alpha=0.4,size=2) + scale_colour_manual(values=cbPalette)
+```
+
+
+# Response plots
+
+Plot achieved yield against actual applied rates versus prescribed rates.
+
+```{r}
+Model2.lm <- lm(Y18 ~ Y17 + R18,data=seed.2018.dat)
+summary(Model2.lm)
+Model2.alt.lm <- lm(Y18 ~ R18 + Y17,data=seed.2018.dat)
+summary(Model2.alt.lm)
+Model2.2.lm <- lm(Y18 ~ Y17,data=seed.2018.dat)
+summary(Model2.2.lm)
+anova(Model2.2.lm)
+
+Model3.lm <- lm(Y18 ~ R18 + Y17+R18*Y17,data=seed.2018.dat)
+Model3.alt.lm <- lm(Y18 ~ Y17 + R18 + R18*Y17,data=seed.2018.dat)
+summary(Model3.lm)
+summary(Model3.alt.lm)
+anova(Model2.lm)
+anova(Model2.alt.lm)
+anova(Model3.lm)
+anova(Model3.alt.lm)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(seed.2018.dat, aes(R18, Y18)) +
+  geom_boxplot(aes(group = cut_width(ControlRate, 500)), outlier.alpha = 0.1) +
+geom_jitter(width = 50,alpha=0.1)
+```
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(R18,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(aes(color=Variety), size=1) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(seed.2018.dat, aes(R18,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1,color=cbPalette[2]) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(seed.2018.dat, aes(Y17,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1,color=cbPalette[2]) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(seed.2018.dat, aes(Y17,R18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1,color=cbPalette[2]) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+
+
+
+
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(AppliedRate,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(aes(color=Variety), size=1) + geom_smooth(se=FALSE)
+```
+
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(ControlRate,Y18)) + geom_point(aes(color=Variety), size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(aes(color=Variety))
+```
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(AppliedRate,Y18)) +
+geom_point(aes(color=Variety), size=1) + geom_smooth(aes(color=Variety)) + scale_color_manual(values=cbPalette)
+```
+
+
+
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(Y16,ControlRate)) + geom_point(aes(color=Variety), size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(se=FALSE)
+```
+
+
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(Y16,Y18)) + geom_point(aes(color=Variety), size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(se=FALSE)
+```
+
+```{r,fig.width=8,fig.height=5}
+ggplot(seed.2018.dat, aes(Y17,Y18)) + geom_point(aes(color=Variety), size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(se=FALSE)
+```
+
+
+TODO : optimize grid size
+
+# Generalized Additive Model
+
+```{r}
+
+red.gam <- gam(Y18 ~  Y17, data=GridCells)
+lm.gam <- gam(Y18 ~ R18 + Y17, data=GridCells)
+gam.check(red.gam)
+gam.check(lm.gam)
+```
+
+```{r}
+red.s.gam <- gam(Y18 ~ s(Y17), data=GridCells)
+s.gam <- gam(Y18 ~ s(R18) + s(Y17), data=GridCells)
+gam.check(red.s.gam)
+gam.check(s.gam)
+```
+```{r}
+k9.gam <- gam(Y18 ~ s(R18,k=8) + s(Y17,k=8), data=GridCells)
+```
+
+```{r}
+summary(lm.gam)
+summary(s.gam)
+summary(k9.gam)
+
+anova(lm.gam)
+anova(s.gam)
+anova(k9.gam)
+```
+
+```{r}
+red.gam <- gam(Y18 ~  Y17 + Y16 + Y15 + Y13, data=GridCells)
+lm.gam <- gam(Y18 ~ R18 + Y17 + Y16 + Y15 + Y13, data=GridCells)
+gam.check(red.gam)
+gam.check(lm.gam)
+```
+
+```{r}
+red.s.gam <- gam(Y18 ~ s(Y17) + s(Y16) + s(Y15) + s(Y13), data=GridCells)
+s.gam <- gam(Y18 ~ s(R18) + s(Y17) + s(Y16) + s(Y15) + s(Y13), data=GridCells)
+gam.check(red.s.gam)
+gam.check(s.gam)
+```
+```{r}
+k9.gam <- gam(Y18 ~ s(R18,k=9) + s(Y17,k=9) + s(Y16,k=9) + s(Y15,k=9) + s(Y13,k=9), data=GridCells)
+```
+
+```{r}
+summary(lm.gam)
+summary(s.gam)
+summary(k9.gam)
+
+anova(lm.gam)
+anova(s.gam)
+anova(k9.gam)
+```
+
+```{r}
+plot(lm.gam,pages=1,residuals=TRUE,all.terms=TRUE,shade=TRUE,shade.col=2)
+plot(s.gam,pages=1,residuals=TRUE,all.terms=TRUE,shade=TRUE,shade.col=2)
+plot(k9.gam,pages=1,residuals=TRUE,all.terms=TRUE,shade=TRUE,shade.col=2)
+```
+
+```{r,eval=FALSE}
+seed.2018.dat <- grid.field(seed.2018.dat)
+cells.seed.dat$AR18 <- aggregate(AppliedRate ~ Row + Column,data=seed.2018.dat,FUN=mean,na.rm=TRUE)$AppliedRate
+```
+
+
+
+
+
+
+
+```{r, echo=FALSE,eval=FALSE}
+library(DiagrammeR)
+DiagrammeR::grViz("digraph rmarkdown {Rate -> Yield}", height=200)
+```
+
+```{r, echo=FALSE,eval=FALSE}
+DiagrammeR::grViz("digraph rmarkdown {
+                 Fertility -> Rate  
+                 Fertility -> Yield}", height=200)
+```
+
+```{r, echo=FALSE,eval=FALSE}
+DiagrammeR::grViz('digraph rmarkdown {
+                 Fertility -> Rate  
+                 Rate -> Yield [ style=dashed label=indirect ]
+                 Fertility -> Yield}', height=200)
+```
+
+
+```{r, echo=FALSE,eval=FALSE}
+DiagrammeR::grViz('digraph rmarkdown {
+                 Fertility -> ControlRate  
+                 ControlRate -> AppliedRate [style=dashed]
+                 AppliedRate -> Yield [style=dashed]
+                 Fertility -> Yield}', height=200)
+```
+
+
+
+```{r}
+Model2_dag <- dagify(Y18 ~ R18,
+       R18 ~ Y17,
+       Y18 ~ Y17,
+       labels = c("Y18" = "Yield\n 2018", 
+                  "R18" = "Seeding Rate",
+                  "Y17" = "Yield \n2017"),
+       #latent = "unhealthy",
+       #exposure = "smoking",
+       outcome = "Y18")
+
+ggdag(Model2_dag, text = FALSE, use_labels = "label")
+```
+
+
+
+
+```{r,fig.width=8,fig.height=4.5}
+Model2_dag <- dagify(Y18 ~ R18,
+       Y18 ~ Y17,
+       labels = c("Y18" = "Yield\n 2018", 
+                  "R18" = "Seeding Rate",
+                  "Y17" = "Yield \n2017"),
+       #latent = "unhealthy",
+       #exposure = "smoking",
+       outcome = "Y18")
+
+ggdag(Model2_dag, text = FALSE, use_labels = "label")
+```
+
+
+
+

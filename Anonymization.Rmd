@@ -1,0 +1,223 @@
+---
+title: "Process Files"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Overview
+
+To keep these data anonymous, I' processing the source files to remove GPS coordinates. I could simply set coordinates to 0, but I like to work with metric distances, if nothing else than to make it easier to think of yield in terms compatible with machine dimensions.
+
+I do, however, retain the historical family names. These are typically the names associated with a family who owned or farmed a particular cropland in the past. The files were typically exported from `myjohndeere.deere.com` with longer file names. In the past, the data included 7 `channels` per sample, but more recent exports aggregate time samples. I've kept some of the older file formats in `Channels` folders on my machine. The files in these projects should not have channel data.
+
+I will also rename some fields to make the data fields more self-documenting.
+
+```{r}
+file.names <- c("")
+file.path <- c("~/Work/git/statistics/test_cases/claussen/")
+
+source('~/Work/git/statistics/R/add.metric.R')
+source('~/Work/git/statistics/R/plot.gps.grids.R')
+source('~/Work/git/statistics/R/aggregate.seed.fn.R')
+source('~/Work/git/statistics/R/aggregate.harvest.fn.R')
+```
+
+## Shapefiles
+
+```{r,eval=FALSE}
+field.name <- 'Dave Claussen-Kenny-cash-AndersonsStevens-Soybeans'
+field.name <- 'Dave Claussen-Kenny-cash-AndersonsStevensW-Corn.shp'
+file.name <-paste('~/Work/git/statistics/test_cases/claussen/Harvest/2013',field.name,sep='/')
+
+#library(maptools)
+#getinfo.shape(file.name)
+#fieldA.2016dat <- readShapeSpatial(file.name)
+library(sf)
+fieldA.2016dat <- st_read(file.name)
+summary(fieldA.2016dat)
+#plot(fieldA.2016dat["VRYIELDVOL"])
+head(fieldA.2016dat["VRYIELDVOL"])
+m.sf = st_as_sf(fieldA.2016dat["VRYIELDVOL"])
+plot(m.sf)
+head(as(fieldA.2016dat["VRYIELDVOL"],'Spatial'))
+#library(shapefiles)
+#shapefile <- read.shapefile(file.name)
+```
+
+
+
+
+```{r}
+library(ggplot2)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+
+```
+
+# Data
+
+These data have multiple channels per harvest pass (the combine header is divided into sections), so we need to combine yield observations. This section reads and processes the data. 
+
+Two utility functions to automate the first step of aggregation:
+Note that these functions assume data are exported (from QGIS) with `X` and `Y` coordinates.
+
+# Home
+
+```{r}
+dir <- '~/Work/git/statistics/test_cases/claussen/'
+overview.path <- paste(dir,'Overview.csv',sep='')
+Overview <- read.csv(overview.path)
+
+#Use this for treated B
+#Overview = Overview[Overview$Group==1,]
+
+activities = c('Harvest','Seeding','Application')
+
+seeding.columns <- c('Longitude','Latitude','AppliedRate','ControlRate','Variety',"DISTANCE","Heading")
+harvest.columns <- c('Longitude','Latitude','Yield',"SWATHWIDTH",'Swaths',"DISTANCE","Heading","WetMass","Moisture")
+
+groups <- vector(mode='list',length=length(unique(Overview$Group)))
+tables <- vector(mode='list',length=length(unique(Overview$Group)))
+names(tables) <- unique(Overview$Group)
+for(g in length(unique(Overview$Group))) {
+  tables[[g]] <- vector(mode='list')
+}
+
+for(i in 1:dim(Overview)[1]) {
+  Crop <- Overview$Crop[i]
+  if(Crop!='') {
+    
+    for(activity in activities) {
+      path <- paste(dir,Overview$Field[i],'/',Overview$Field[i],sep='')
+      path <- paste(path,Overview$Year[i],Overview$Crop[i],activity,sep=' ')
+      path <- paste(path,'csv',sep='.')
+      
+      
+      if(file.exists(path)) {
+        current.dat <- read.csv(path,header=TRUE,comment.char = "#")
+        if(activity=='Seeding') {
+          tmp <- NULL
+          try(tmp <- aggregate.seed.fn(current.dat))
+          if(is.null(tmp)) {
+            print(path)
+          } else {
+            current.dat <- tmp
+            current.dat$VRYIELDVOL <- current.dat$AppliedRate
+          }
+        } 
+        if(!is.null(current.dat)) {
+         # current.dat <- add.metric(current.dat)
+          current.dat$Swaths <- 7
+          current.dat$SWATHWIDTH <- 5
+          current.dat$Yield <- current.dat$VRYIELDVOL
+          attr(current.dat,'activity') <- activity
+          attr(current.dat,'crop') <- Overview$Crop[i]
+          attr(current.dat,'year') <- Overview$Year[i]
+          attr(current.dat,'code') <- Overview$Code[i]
+          tables[[Overview$Group[i]]] <- append(tables[[Overview$Group[i]]], list(current.dat)) 
+        }
+      }
+    }
+  }
+}
+```
+
+```{r}
+out.dir <- './data'
+b.origin = c()
+for(g in 1:length(tables)) {
+  current.fields <- tables[[g]]
+  
+  min.X <- Inf
+  min.Y <- Inf
+  code=''
+  if(length(current.fields)>0) {
+    for(f in 1:length(current.fields)) {
+      if(!is.null(current.fields[[f]])) {
+        current.dat <- current.fields[[f]]
+        current.X <- min(current.dat$X)
+        current.Y <- min(current.dat$Y)
+
+        crop <- attr(current.dat,'crop')
+        year <- attr(current.dat,'year')
+        code <- attr(current.dat,'code')
+        mask <- Overview$Code==code & Overview$Year==year
+        
+        if(Overview$X[mask] > current.X) {Overview$X[mask] <- current.X}
+        if(Overview$Y[mask] > current.Y) {Overview$Y[mask] <- current.Y}
+        if(current.X<min.X) {min.X <- current.X}
+        if(current.Y<min.Y) {min.Y <- current.Y}
+      }
+    }
+  }
+
+  origin <- c(min.X,min.Y)
+  
+  if(length(current.fields)>0) {
+  for(f in 1:length(current.fields)) {
+    current.dat <- current.fields[[f]]
+    if(!is.null(current.fields[[f]])) {
+      current.dat <- add.metric(current.dat,origin)
+      #plot.gps.grids(current.dat,plots=0,residuals=TRUE)
+    
+      out.activity <- attr(current.dat,'activity')
+      crop <- attr(current.dat,'crop')
+      year <- attr(current.dat,'year')
+      code <- attr(current.dat,'code')
+
+      out.path <-  paste(out.dir,code,sep='/')
+      out.path <- paste(out.path,year,crop,out.activity,sep=' ')
+      out.path <- paste(out.path,'csv',sep='.')
+      print(out.path)
+    
+      if(out.activity=='Seeding') {
+          try(write.csv(current.dat[,seeding.columns],file=out.path))
+      } else {
+          write.csv(current.dat[,harvest.columns],file=out.path)
+      }
+    }
+  }
+  }
+}
+
+#write.csv(Overview,file=overview.path)
+```
+
+```{r}
+#soybean.2019.dat <- read.csv('~/Work/git/statistics/test_cases/claussen/AndersonsStevens/AndersonsStevens 2019 Soybeans Harvest.csv')
+#B <- Overview[Overview$Group==1,]
+#origin <- c(min(B$X),min(B$Y))
+```
+
+```{r,eval=FALSE}
+treated.dat <- read.csv('~/Work/git/ASA_CSSA_SSSA/2019/AndersonsStevens-Soybeans.csv',header=TRUE,comment.char = "#")
+#c(min(treated.dat$X),min(treated.dat$Y))
+treated.dat <- add.metric(treated.dat,origin)
+out.path <-  paste(out.dir,'B',sep='/')
+out.path <- paste(out.path,2019,'Soybeans','Treated',sep=' ')
+out.path <- paste(out.path,'csv',sep='.')
+out.path
+#names(current.dat)[1] <- 'Longitude'
+#names(current.dat)[2] <- 'Latitude'
+names(treated.dat)[7] <- 'Yield'
+write.csv(treated.dat[,c('Longitude','Latitude','Time','Yield','Block','Sample','Balanced','Rectangle','Square')],file=out.path)
+
+ggplot(treated.dat, aes(X,Y)) + 
+geom_point(aes(colour = Block),size=1)
+```
+
+```{r}
+ggplot(treated.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Block),size=1) 
+```
+
+
+For some reason, I have a few csv files with different column headers. I can't remember, perhaps I exported from SMS?
+
+
+
+
+
+
