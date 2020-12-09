@@ -75,8 +75,8 @@ Overview <- read.csv(overview.path)
 
 activities = c('Harvest','Seeding','Application')
 
-seeding.columns <- c('Longitude','Latitude','AppliedRate','ControlRate','Variety',"DISTANCE","Heading")
-harvest.columns <- c('Longitude','Latitude','Yield',"SWATHWIDTH",'Swaths',"DISTANCE","Heading","WetMass","Moisture")
+seeding.columns <- c('Longitude','Latitude','IsoTime','AppliedRate','ControlRate','Variety',"DISTANCE","Heading")
+harvest.columns <- c('Longitude','Latitude','IsoTime','Yield',"SWATHWIDTH",'Swaths',"DISTANCE","Heading","WetMass","Moisture")
 
 groups <- vector(mode='list',length=length(unique(Overview$Group)))
 tables <- vector(mode='list',length=length(unique(Overview$Group)))
@@ -208,7 +208,7 @@ ggplot(treated.dat, aes(X,Y)) +
 geom_point(aes(colour = Block),size=1)
 ```
 
-```{r}
+```{r,eval=FALSE}
 ggplot(treated.dat, aes(Longitude,Latitude)) + 
 geom_point(aes(colour = Block),size=1) 
 ```
