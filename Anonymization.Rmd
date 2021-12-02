@@ -87,36 +87,37 @@ for(g in length(unique(Overview$Group))) {
 
 for(i in 1:dim(Overview)[1]) {
   Crop <- Overview$Crop[i]
-  if(Crop!='') {
+  if(!is.na(Overview$Group[i])) {
+    if(Crop!='') {
     
-    for(activity in activities) {
-      path <- paste(dir,Overview$Field[i],'/',Overview$Field[i],sep='')
-      path <- paste(path,Overview$Year[i],Overview$Crop[i],activity,sep=' ')
-      path <- paste(path,'csv',sep='.')
+      for(activity in activities) {
+        path <- paste(dir,Overview$Field[i],'/',Overview$Field[i],sep='')
+        path <- paste(path,Overview$Year[i],Overview$Crop[i],activity,sep=' ')
+        path <- paste(path,'csv',sep='.')
       
-      
-      if(file.exists(path)) {
-        current.dat <- read.csv(path,header=TRUE,comment.char = "#")
-        if(activity=='Seeding') {
-          tmp <- NULL
-          try(tmp <- aggregate.seed.fn(current.dat))
-          if(is.null(tmp)) {
-            print(path)
-          } else {
-            current.dat <- tmp
-            current.dat$VRYIELDVOL <- current.dat$AppliedRate
+        if(file.exists(path)) {
+          current.dat <- read.csv(path,header=TRUE,comment.char = "#")
+          if(activity=='Seeding') {
+            tmp <- NULL
+            try(tmp <- aggregate.seed.fn(current.dat))
+            if(is.null(tmp)) {
+              print(path)
+            } else {
+              current.dat <- tmp
+              current.dat$VRYIELDVOL <- current.dat$AppliedRate
+            }
+          } 
+          if(!is.null(current.dat)) {
+           # current.dat <- add.metric(current.dat)
+            current.dat$Swaths <- 7
+            current.dat$SWATHWIDTH <- 5
+            current.dat$Yield <- current.dat$VRYIELDVOL
+            attr(current.dat,'activity') <- activity
+            attr(current.dat,'crop') <- Overview$Crop[i]
+            attr(current.dat,'year') <- Overview$Year[i]
+            attr(current.dat,'code') <- Overview$Code[i]
+            tables[[Overview$Group[i]]] <- append(tables[[Overview$Group[i]]], list(current.dat)) 
           }
-        } 
-        if(!is.null(current.dat)) {
-         # current.dat <- add.metric(current.dat)
-          current.dat$Swaths <- 7
-          current.dat$SWATHWIDTH <- 5
-          current.dat$Yield <- current.dat$VRYIELDVOL
-          attr(current.dat,'activity') <- activity
-          attr(current.dat,'crop') <- Overview$Crop[i]
-          attr(current.dat,'year') <- Overview$Year[i]
-          attr(current.dat,'code') <- Overview$Code[i]
-          tables[[Overview$Group[i]]] <- append(tables[[Overview$Group[i]]], list(current.dat)) 
         }
       }
     }
@@ -127,6 +128,8 @@ for(i in 1:dim(Overview)[1]) {
 ```{r}
 out.dir <- './data'
 b.origin = c()
+Overview$X <- Inf
+Overview$Y <- Inf
 for(g in 1:length(tables)) {
   current.fields <- tables[[g]]
   
@@ -153,7 +156,7 @@ for(g in 1:length(tables)) {
     }
   }
 
-  origin <- c(min.X,min.Y)
+  print(origin <- c(min.X,min.Y))
   
   if(length(current.fields)>0) {
   for(f in 1:length(current.fields)) {

@@ -1,0 +1,298 @@
+---
+title: "Combining Multiple Years"
+author: "Peter Claussen"
+date: "5/29/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+Suppose we have several yield data sets from a single field over multiple years and different crops. We want a combined fertility map from these data. This will include two key steps.
+
+- Spatial alignment
+  I like to convert field maps to metric terms, it's easier for me to interpret. So, we need to convert relative to a single GPS point.
+  
+- Normalization
+Crops will have different yield scales, so we will normalize to z-scores.
+
+# Sample Data
+
+We'll rename some columns
+```{r}
+columns <-c("Group.1","X","Y","VRYIELDVOL","DISTANCE","SWATHWIDTH","Swaths","Heading","WetMass","Moisture")
+new.columns <-c("IsoTime","X","Y","Yield","Distance","Swathwidth","Swaths","Heading","WetMass","Moisture")
+home.2013.dat <- read.csv('./yield/Home Soybeans 2013.csv')[,columns]
+names(home.2013.dat) <- new.columns
+home.2013.dat$Year <- 2013
+
+home.2015.dat <- read.csv('./yield/Home Wheat 2015.csv')[,columns]
+names(home.2015.dat) <- new.columns
+home.2015.dat$Year <- 2015
+
+home.2017.dat <- read.csv('./yield/Home Soybeans 2017.csv')[,columns]
+names(home.2017.dat) <- new.columns
+home.2017.dat$Year <- 2017
+
+home.2016.dat <- read.csv('./yield/Home Corn 2016.csv')[,columns]
+names(home.2016.dat) <- new.columns
+home.2016.dat$Year <- 2016
+
+home.2018.dat <- read.csv('./yield/Home Corn 2018.csv')[,columns]
+names(home.2018.dat) <- new.columns
+home.2018.dat$Year <- 2018
+```
+
+```{r}
+home.origin <- c(min(c(home.2013.dat$X,home.2015.dat$X,home.2017.dat$X,home.2016.dat$X,home.2018.dat$X)),
+                 min(c(home.2013.dat$Y,home.2015.dat$Y,home.2017.dat$Y,home.2016.dat$Y,home.2018.dat$Y)))
+```
+
+```{r}
+add.metric <- function(data, origin=c(-1,-1)) {
+  if(any(origin<0)) {
+    origin[1] <- min(data$X)
+    origin[2] <- min(data$Y)
+  }
+  data$Longitude <- data$X - origin[1]
+  data$Latitude <- data$Y - origin[2]
+  Latitudeid <- (min(data$Y) + max(data$Y))/2
+  m_per_deg_lat = 111132.954 - 559.822 * cos( 2.0 * Latitudeid ) + 1.175 * cos( 4.0 * Latitudeid)
+  m_per_deg_lon = (3.14159265359/180 ) * 6367449 * cos ( Latitudeid )
+  data$Longitude <- data$Longitude*m_per_deg_lon
+  data$Latitude <- data$Latitude*m_per_deg_lat
+  return(data)
+}
+```
+
+```{r}
+home.2013.dat <- add.metric(home.2013.dat,home.origin)
+home.2015.dat <- add.metric(home.2015.dat,home.origin)
+home.2017.dat <- add.metric(home.2017.dat,home.origin)
+home.2016.dat <- add.metric(home.2016.dat,home.origin)
+home.2018.dat <- add.metric(home.2018.dat,home.origin)
+```
+
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2013.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Yield),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Yield", x="X (m)", y="Y (m)", title = "2013")
+```
+
+
+```{r}
+home.2013.dat <- home.2013.dat[home.2013.dat$Longitude>260,]
+home.2013.dat <- home.2013.dat[home.2013.dat$Longitude<900,]
+home.2013.dat <- home.2013.dat[home.2013.dat$Latitude>100,]
+home.2013.dat <- home.2013.dat[home.2013.dat$Latitude<500,]
+
+home.2015.dat <- home.2015.dat[home.2015.dat$Longitude>260,]
+home.2017.dat <- home.2017.dat[home.2017.dat$Longitude>260,]
+home.2016.dat <- home.2016.dat[home.2016.dat$Longitude>260,]
+home.2018.dat <- home.2018.dat[home.2018.dat$Longitude>260,]
+
+home.2015.dat <- home.2015.dat[home.2015.dat$Longitude<900,]
+home.2017.dat <- home.2017.dat[home.2017.dat$Longitude<900,]
+home.2016.dat <- home.2016.dat[home.2016.dat$Longitude<900,]
+home.2018.dat <- home.2018.dat[home.2018.dat$Longitude<900,]
+
+home.2015.dat <- home.2015.dat[home.2015.dat$Latitude>100,]
+home.2017.dat <- home.2017.dat[home.2017.dat$Latitude>100,]
+home.2016.dat <- home.2016.dat[home.2016.dat$Latitude>100,]
+home.2018.dat <- home.2018.dat[home.2018.dat$Latitude>100,]
+
+home.2015.dat <- home.2015.dat[home.2015.dat$Latitude<500,]
+home.2017.dat <- home.2017.dat[home.2017.dat$Latitude<500,]
+home.2016.dat <- home.2016.dat[home.2016.dat$Latitude<500,]
+home.2018.dat <- home.2018.dat[home.2018.dat$Latitude<500,]
+```
+
+Now that we've trimmed points, set origin to 0.
+
+```{r}
+home.2013.dat$Longitude <- home.2013.dat$Longitude - 260
+home.2015.dat$Longitude <- home.2015.dat$Longitude - 260
+home.2017.dat$Longitude <- home.2017.dat$Longitude - 260
+home.2016.dat$Longitude <- home.2016.dat$Longitude - 260
+home.2018.dat$Longitude <- home.2018.dat$Longitude - 260
+
+home.2013.dat$Latitude <- home.2013.dat$Latitude - 100
+home.2015.dat$Latitude <- home.2015.dat$Latitude - 100
+home.2017.dat$Latitude <- home.2017.dat$Latitude - 100
+home.2016.dat$Latitude <- home.2016.dat$Latitude - 100
+home.2018.dat$Latitude <- home.2018.dat$Latitude - 100
+```
+
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2013.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Yield),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Yield", x="X (m)", y="Y (m)", title = "2013")
+```
+
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2017.dat, aes(Yield, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+
+```{r}
+yield.z.fn <- function(tbl,rng=3) {
+  tbl <- tbl[!is.na(tbl$Yield),]
+  yield.mean <- mean(tbl$Yield)
+  yield.sd <- sd(tbl$Yield)
+  tbl$Z <- (tbl$Yield-yield.mean)/yield.sd
+  return(tbl)
+}
+```
+
+
+```{r}
+home.2013.dat <- yield.z.fn(home.2013.dat)
+
+home.2015.dat <- yield.z.fn(home.2015.dat)
+home.2017.dat <- yield.z.fn(home.2017.dat)
+home.2016.dat <- yield.z.fn(home.2016.dat)
+home.2018.dat <- yield.z.fn(home.2018.dat)
+```
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2013.dat, aes(Z, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2013.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2013")
+```
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2017.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2017")
+```
+
+```{r}
+home.2013.dat <- home.2013.dat[abs(home.2013.dat$Z)<5,]
+
+home.2015.dat <- home.2015.dat[abs(home.2015.dat$Z)<5,]
+home.2016.dat <- home.2016.dat[abs(home.2016.dat$Z)<5,]
+home.2017.dat <- home.2017.dat[abs(home.2017.dat$Z)<5,]
+home.2018.dat <- home.2018.dat[abs(home.2018.dat$Z)<5,]
+```
+
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2013.dat, aes(Z, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2013.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2013")
+```
+
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2015.dat, aes(Z, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2015.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2015")
+```
+
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2017.dat, aes(Z, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2017.dat, aes(Yield, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2017.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2017")
+```
+
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2016.dat, aes(Z, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2016.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2016")
+```
+
+
+```{r,fig.width=9,fig.height=4,eval=TRUE}
+ggplot(home.2018.dat, aes(Z, ..density..)) + stat_bin() +
+scale_fill_manual(values=cbPalette) 
+```
+
+```{r,fig.width=7,fig.height=5}
+ggplot(home.2018.dat, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Z),size=.5) + 
+scale_colour_gradient(low=cbPalette[7], high=cbPalette[4]) +
+labs(colour = "Z", x="X (m)", y="Y (m)", title = "2018")
+```
+
+We can use 2013, 2015, 2016, 2017, 2018
+
+```{r}
+save(home.2013.dat,home.2015.dat,home.2016.dat,home.2017.dat,home.2018.dat,file="home.squares.Rda")
+```
+
+
+```{r,eval=FALSE}
+#code used to process data files for Normalization
+load(file='../ManagementZoneML/home.squares.Rda')
+SplitDecimal <- function(s) {
+  return(strsplit(s,split=".",fixed=TRUE)[[1]][1])
+}
+for(year in years) {
+  harvest.dat <- get(paste("home",year,"dat",sep="."))
+  
+  harvest.dat$Longitude <- harvest.dat$LonM
+  harvest.dat$Northing <- harvest.dat$LatM
+  harvest.dat$Yield <- harvest.dat$VRYIELDVOL
+  if(grepl("PM", TempTime) | grepl("AM", TempTime)) {
+    harvest.dat$DateTime <- as.POSIXct(harvest.dat$Group.1, format = "%m/%d/%Y %I:%M:%S %p",tz = "America/Chicago")
+    harvest.dat$TimeStamp <- format(harvest.dat$DateTime,"%Y-%m-%d %H:%M:%S")
+  } else {
+    harvest.dat$TimeStamp <- unlist(lapply(harvest.dat$Group.1,SplitDecimal))
+    harvest.dat$DateTime <- as.POSIXct(harvest.dat$TimeStamp, format = "%Y-%m-%dT%H:%M:%S",tz = "America/Chicago")
+    harvest.dat$TimeStamp <- format(harvest.dat$DateTime,"%Y-%m-%d %H:%M:%S")
+  }
+
+  harvest.dat <- harvest.dat[harvest.dat$Longitude<=600,]
+  write.csv(harvest.dat[,c('Yield','Latitude','Longitude','TimeStamp')], file=paste("home",year,"csv",sep="."),row.names = FALSE)
+}
+```

@@ -1,0 +1,730 @@
+---
+title: "Overview"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+#theme_set(theme_dag())
+#since we have k-fold cross validation
+
+set.seed(1000)
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggformula)
+library(GGally)
+library(ggdag)
+library(mgcv)
+library(bnlearn)
+library(splines)
+
+  grey <- "#999999"
+  orange <- "#E69F00"
+  skyblue <- "#56B4E9"
+  bluishgreen <- "#009E73"
+  yellow <- "#F0E442"
+  blue <- "#0072B2"
+  vermillion <- "#D55E00"
+  
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+
+remove.harvest.outliers.fn <- function(tbl,rng=3) {
+  tbl <- tbl[!is.na(tbl$Yield),]
+  yield.mean <- mean(tbl$Yield)
+  yield.sd <- sd(tbl$Yield)
+  tbl <- tbl[tbl$Yield<=yield.mean+rng*yield.sd,]
+  tbl<- tbl[tbl$Yield>=yield.mean+rng-yield.sd,]
+  return(tbl)
+}
+remove.seed.outliers.fn <- function(tbl) {
+  tbl <- tbl[tbl$AppliedRate<=32000,]
+  tbl<- tbl[tbl$AppliedRate>=20000,]
+  return(tbl)
+}
+```
+
+# Background
+
+See CausalInferenceA
+
+
+# Introduction
+
+# Data 
+
+
+## Load Data
+
+```{r,eval=TRUE}
+harvest.2013.dat <- read.csv(file='./data/A 2013 Soybeans Harvest.csv')
+harvest.2015.dat <- read.csv(file='./data/A 2015 Wheat Harvest.csv')
+harvest.2018.dat <- read.csv(file='./data/A 2018 Corn Harvest.csv')
+harvest.2016.dat <- read.csv(file='./data/A 2016 Corn Harvest.csv')
+harvest.2017.dat <- read.csv(file='./data/A 2017 Soybeans Harvest.csv')
+seed.2018.dat <-read.csv(file='./data/A 2018 Corn Seeding.csv')
+harvest.2019.dat <- read.csv(file='./data/A 2019 Soybeans Harvest.csv')
+seed.2020.dat <-read.csv(file='./data/A 2020 Corn Seeding.csv')
+harvest.2020.dat <-read.csv(file='./data/A 2020 Corn Harvest.csv')
+```
+
+Screen for outliers.
+
+```{r}
+seed.2018.dat <- remove.seed.outliers.fn(seed.2018.dat)
+seed.2020.dat <- remove.seed.outliers.fn(seed.2020.dat)
+harvest.2020.dat <- remove.harvest.outliers.fn(harvest.2020.dat)
+harvest.2019.dat <- remove.harvest.outliers.fn(harvest.2019.dat)
+harvest.2018.dat <- remove.harvest.outliers.fn(harvest.2018.dat)
+harvest.2017.dat <- remove.harvest.outliers.fn(harvest.2017.dat)
+harvest.2013.dat <- remove.harvest.outliers.fn(harvest.2013.dat)
+harvest.2015.dat <- remove.harvest.outliers.fn(harvest.2015.dat)
+harvest.2016.dat <- remove.harvest.outliers.fn(harvest.2016.dat)
+```
+
+
+
+```{r}
+grid.size=10
+all.harvest.dat <- rbind(harvest.2013.dat,
+                         harvest.2015.dat,
+                         harvest.2016.dat,
+                         harvest.2017.dat,
+                         harvest.2018.dat,
+                         harvest.2019.dat,
+                         harvest.2020.dat)
+all.harvest.dat$LatCell <- as.factor(floor(all.harvest.dat$Latitude/grid.size))
+all.harvest.dat$LonCell <- as.factor(floor(all.harvest.dat$Longitude/grid.size))
+
+all.harvest.dat$Cell <- all.harvest.dat$LonCell:all.harvest.dat$LatCell
+
+common.dat <- aggregate(Longitude ~ Cell, data = all.harvest.dat,mean)
+row.names(common.dat) <- common.dat$Cell
+Lats <- aggregate(Latitude ~ Cell, data = all.harvest.dat,mean)
+row.names(Lats) <- Lats$Cell
+
+Counts <- aggregate(Yield ~ Cell, data = all.harvest.dat,length)
+row.names(Counts) <- Counts$Cell
+
+head(Counts)
+common.dat$Latitude <- Lats[row.names(common.dat),'Latitude']
+common.dat$Counts <- Counts[row.names(common.dat),'Yield']
+head(common.dat)
+common.dat <- common.dat[common.dat$Count>4,]
+```
+See CausalInferenceA for models, and YieldDataModels/ModelSelection for model choice
+
+Here, we use bs with 12 df
+
+```{r}
+#basis splines
+
+df <- 12
+l1 <- lm(Yield ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2018.dat)
+common.dat$Y18 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+hist(common.dat$Y18)
+```
+
+```{r}
+l1 <- lm(Yield ~bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2017.dat)
+common.dat$Y17 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2016.dat)
+common.dat$Y16 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2015.dat)
+common.dat$Y15 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2013.dat)
+common.dat$Y13 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+  
+l1 <- lm(Yield ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2019.dat)
+common.dat$Y19 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+  
+l1 <- lm(Yield ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=harvest.2020.dat)
+common.dat$Y20 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(AppliedRate ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=seed.2018.dat)
+common.dat$AR18 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(ControlRate ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=seed.2018.dat)
+common.dat$R18 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(ControlRate ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=seed.2020.dat)
+common.dat$R20 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(AppliedRate ~ bs(Longitude,df=df)*bs(Latitude,df=df),data=seed.2020.dat)
+common.dat$AR20 <- predict(l1,newdata=common.dat[,c("Longitude","Latitude")])
+
+```
+
+
+
+```{r,fig.width=8,fig.height=4.5}
+common.dat$Y13r <- rank(common.dat$Y13)
+common.dat$Y13r <- common.dat$Y13r/max(common.dat$Y13r)
+
+common.dat$Y15r <- rank(common.dat$Y15)
+common.dat$Y15r <- common.dat$Y15r/max(common.dat$Y15r)
+
+Maps <- data.frame(Longitude=c(common.dat$Longitude,common.dat$Longitude),
+                   Latitude=c(common.dat$Latitude,common.dat$Latitude),
+                   Value=c(common.dat$Y13r,common.dat$Y15r),
+                   Map=c(rep('Y13r',length(common.dat$Y13r)),
+                         rep('Y15r',length(common.dat$Y15r))))
+ggplot(Maps, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Seeding and Yield (2018)") + facet_wrap(~ Map)
+```
+
+
+
+# Model 4
+
+
+
+```{r,eval=FALSE}
+model4.dag <- model2network("[Y17][R18|Y17][AR18|R18][Y18|AR18:Y17]")
+graphviz.plot(model4.dag)
+fit1 = bn.fit(model4.dag, common.dat[,c('Y18','R18','Y17','AR18')])
+fit1
+strength4 <- arc.strength(model4.dag, common.dat[,c('Y18','R18','Y17','AR18')])
+
+strength.plot(model4.dag, strength4)
+
+
+bf.strength4 <- bf.strength(model4.dag, common.dat[,c('Y18','R18','Y17','AR18')])
+strength.plot(model4.dag, bf.strength4)
+averaged.network(bf.strength4)
+plot(bf.strength4)
+
+strength4
+bf.strength4
+```
+
+
+
+
+```{r,eval=FALSE}
+learned.dag = iamb(common.dat[,c('Y18','R18','Y17','AR18')])
+graphviz.plot(learned.dag)
+#learned.dag = set.arc(learned.dag, from = "Y17", to = "Y18")
+##learned.dag = set.arc(learned.dag, from = "Y17", to = "R18")
+#learned.dag = set.arc(learned.dag, from = "R18", to = "Y18")
+#graphviz.plot(learned.dag)
+#fit1 = bn.fit(learned.dag, common.dat[,c('Y18','R18','Y17')])
+#fit1
+```
+
+
+## Model 5 and 6
+
+```{r,fig.width=8,fig.height=4.5,eval=FALSE}
+model6_dag <- dagify(Y18 ~ AR18,
+       Y18 ~ Y17,
+       AR18 ~ R18,
+       R18 ~ RS,
+       Y18 ~ RS,
+       Y17 ~ Y16,
+       Y16 ~ Y15,
+       Y15 ~ RS,
+       Y16 ~ RS,
+       Y17 ~ RS,
+       labels = c("Y18" = "Yield\n 2018", 
+                  "R18" = "Control Rate",
+                  "Y17" = "Yield \n2017"),
+       latent = "RS",
+       #exposure = "smoking",
+       outcome = "Y18")
+#ggdag(model6_dag, text = TRUE, use_labels = "label")
+ggdag(model6_dag, text = TRUE)
+```
+
+
+
+```{r,eval=FALSE}
+require(mgcv)
+k=160
+s=2^(-5)
+useGAM = FALSE
+#nearly every path is significant
+KRIG = TRUE
+LM = FALSE
+
+d=21
+gam.dat <- seed.2018.dat
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2018.dat)
+  gam.dat$Y18 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2017.dat)
+  gam.dat$Y17 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2016.dat)
+  gam.dat$Y16 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2015.dat)
+  gam.dat$Y15 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2013.dat)
+  gam.dat$Y13 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+  
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2019.dat)
+  gam.dat$Y19 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+ 
+  b1 <- gam(ControlRate ~ s(Longitude,Latitude,k=k),data=seed.2020.dat)
+  gam.dat$R20 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+  
+  b1 <- gam(Yield ~ s(Longitude,Latitude,k=k),data=harvest.2020.dat)
+  gam.dat$Y20 <- predict(b1,newdata=gam.dat[,c("Longitude","Latitude")])
+```  
+
+
+```{r,eval=FALSE}
+# natural splines
+i=9
+ns.dat <- seed.2018.dat  
+
+l1 <- lm(Yield ~ ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=harvest.2018.dat)
+ns.dat$Y18 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=harvest.2017.dat)
+ns.dat$Y17 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=harvest.2016.dat)
+ns.dat$Y16 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=harvest.2015.dat)
+ns.dat$Y15 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+
+l1 <- lm(Yield ~ ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=harvest.2013.dat)
+ns.dat$Y13 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+  
+l1 <- lm(Yield ~ ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=harvest.2019.dat)
+ns.dat$Y19 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+  
+l1 <- lm(ControlRate ~ ns(Longitude,df=1+2*(i-1))*ns(Latitude,df=1+2*(i-1)),data=seed.2020.dat)
+ns.dat$R20 <- predict(l1,newdata=ns.dat[,c("Longitude","Latitude")])
+```
+
+
+
+```{r,fig.width=8,fig.height=4.5}
+map.dat <- common.dat
+map.dat$Y19 <- rank(map.dat$Y19)
+map.dat$Y19 <- map.dat$Y19/max(map.dat$Y19)
+map.dat$Y18 <- rank(map.dat$Y18)
+map.dat$Y18 <- map.dat$Y18/max(map.dat$Y18)
+map.dat$Y17 <- rank(map.dat$Y17)
+map.dat$Y17 <- map.dat$Y17/max(map.dat$Y17)
+
+map.dat$Y16 <- rank(map.dat$Y16)
+map.dat$Y16 <- map.dat$Y16/max(map.dat$Y16)
+map.dat$Y15 <- rank(map.dat$Y15)
+map.dat$Y15 <- map.dat$Y15/max(map.dat$Y15)
+map.dat$Y13 <- rank(map.dat$Y13)
+map.dat$Y13 <- map.dat$Y13/max(map.dat$Y13)
+
+Maps6 <- data.frame(Longitude=c(map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude,
+                                map.dat$Longitude),
+                   Latitude=c(map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude,
+                              map.dat$Latitude),
+                   Value=c(map.dat$Y19,
+                           map.dat$Y18,
+                           map.dat$Y17,
+                           map.dat$Y16,
+                           map.dat$Y15,
+                           map.dat$Y13),
+                   Map=c(rep(2019,length(map.dat$Y19)),
+                         rep(2018,length(map.dat$Y18)),
+                         rep(2017,length(map.dat$Y17)),
+                         rep(2016,length(map.dat$Y16)),
+                         rep(2015,length(map.dat$Y15)),
+                         rep(2013,length(map.dat$Y13))))
+ggplot(Maps6, aes(Longitude,Latitude)) + 
+geom_point(aes(colour = Value),size=.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Multiple Years") + facet_wrap(~ Map)
+```
+
+
+```{r,fig.width=12,fig.height=6,echo=FALSE}
+ggpairs(common.dat[,c('Y20','R20','AR20','Y19','Y18','R18','AR18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4),title="GAM Smoothing")
+```
+
+
+```{r}
+mapped.dat <- common.dat
+```
+
+```{r}
+model5.dat <- common.dat[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model5.dag <- model2network("[Y15][Y16|Y15][Y17|Y16][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17]")
+#graphviz.plot(model5.dag,layout = "dot")
+#graphviz.plot(model5.dag,layout = "fdp")
+graphviz.plot(model5.dag,layout = "circo")
+model5.fit = bn.fit(model5.dag, model5.dat)
+model5.fit
+#bn.fit.qqplot(model5.fit)
+strength5 <- arc.strength(model5.dag, model5.dat)
+
+strength.plot(model5.dag, strength5,layout = "circo")
+
+bf.strength5 <- bf.strength(model5.dag, model5.dat)
+
+strength.plot(model5.dag, bf.strength5)
+averaged.network(bf.strength5)
+plot(bf.strength5)
+
+strength5
+bf.strength5
+```
+
+```{r}
+model6.dat <- common.dat[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model6.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15]")
+model6.dag
+model6.fit = bn.fit(model6.dag, model6.dat)
+model6.fit
+#bn.fit.qqplot(model6.fit)
+strength6 <- arc.strength(model6.dag, model6.dat)
+
+strength.plot(model6.dag, strength6)
+
+bf.strength6 <- bf.strength(model6.dag, model6.dat)
+
+strength.plot(model6.dag, bf.strength6)
+averaged.network(bf.strength6)
+plot(bf.strength6)
+
+strength6
+bf.strength6
+
+bn.cv(model5.dat, model5.dag)
+bn.cv(model6.dat, model6.dag)
+```
+
+```{r,eval=FALSE}
+#VarCorr(default.gam)
+#learned.dag = iamb(common.dat[,c('Y18',"R18","Y17","Y16","Y15")])
+learned.dag = iamb(common.dat[,c('Y18','AR18',"R18","Y17","Y16","Y15","Y13")])
+graphviz.plot(learned.dag)
+```
+
+```{r,eval=FALSE}
+model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18][R20|Y19:Y18:Y17:Y16:Y15]")
+
+model9.fit = bn.fit(model9.dag, common.dat[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')])
+model9.fit
+bn.fit.qqplot(model9.fit)
+strength9 <- arc.strength(model9.dag, mapped.dat[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')])
+strength9
+strength.plot(model9.dag, strength9)
+```
+
+```{r}
+model9.dat <- common.dat[,c('Y20','R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18:Y17:Y16:Y15][R20|Y19:Y18:Y17:Y16:Y15][Y20|R20:Y19:Y18:Y17:Y16:Y15]")
+
+model9.fit = bn.fit(model9.dag, model9.dat)
+model9.fit
+bn.fit.qqplot(model9.fit)
+
+bf.strength9 <- bf.strength(model9.dag, model9.dat)
+
+strength.plot(model9.dag, bf.strength9)
+averaged.network(bf.strength9)
+plot(bf.strength9)
+
+bf.strength9 
+```
+
+```{r,eval=TRUE}
+#VarCorr(default.gam)
+#learned.dag = iamb(common.dat[,c('Y18',"R18","Y17","Y16","Y15")])
+learned.dag = iamb(mapped.dat[,c('R20','Y19','Y18','AR18',"R18","Y17","Y16","Y15","Y13")])
+graphviz.plot(learned.dag)
+```
+
+
+
+```{r,KrigHome,fig.width=6,fig.height=4,eval=FALSE}
+home.2017.krig <- krig.yield.fn(harvest.2017.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=20,idw=!krig)
+home.krig <- krig.yield.fn(harvest.2018.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=20,idw=!krig)
+home.2016.krig <- krig.yield.fn(harvest.2016.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=20,idw=!krig)
+seed.2018.dat$Y17 <- home.2017.krig$Yield
+seed.2018.dat$Y18 <- home.krig$Yield
+
+if(!file.exists("home.Rda")) {
+  home.krig <- krig.yield.fn(harvest.2018.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=60)
+  home.2016.krig <- krig.yield.fn(harvest.2016.dat[,c("Yield","Longitude","Latitude")],
+                             seed.2018.dat[,c("Longitude","Latitude")],rng=60)
+  save(home.krig,home.2016.krig,file="home.Rda")
+}
+
+load(file="home.Rda")
+ # plot(gamma ~ dist, data=home.krig$harvest.var,
+#       ylim=c(0,max(home.krig$harvest.var$gamma)),col="blue")
+ # abline(v=60)
+```
+
+
+# 2019 Response
+
+```{r,fig.width=8,fig.height=4.5}
+GridLong <- reshape(common.dat, 
+  varying = c('Y18','Y17','Y16','Y15','Y13','Y19'), 
+  v.names = "Yield",
+  timevar = "Year", 
+  times = c(2018,2017,2016,2015,2013,2019), 
+  direction = "long")
+plot(Yield~Longitude,data=GridLong)
+GridLong$Year <- factor(GridLong$Year)
+ggplot(GridLong, aes(Longitude,Yield,color=Year)) + scale_colour_manual(values=cbPalette) +
+geom_point(size=2) + geom_smooth(se = FALSE)
+```
+
+
+
+# Response plots
+
+Plot achieved yield against actual applied rates versus prescribed rates.
+
+```{r}
+Model2.lm <- lm(Y18 ~ Y17 + R18,data=mapped.dat)
+summary(Model2.lm)
+Model2.alt.lm <- lm(Y18 ~ R18 + Y17,data=mapped.dat)
+summary(Model2.alt.lm)
+Model2.2.lm <- lm(Y18 ~ Y17,data=mapped.dat)
+summary(Model2.2.lm)
+anova(Model2.2.lm)
+
+Model3.lm <- lm(Y18 ~ R18 + Y17+R18*Y17,data=mapped.dat)
+Model3.alt.lm <- lm(Y18 ~ Y17 + R18 + R18*Y17,data=mapped.dat)
+summary(Model3.lm)
+summary(Model3.alt.lm)
+anova(Model2.lm)
+anova(Model2.alt.lm)
+anova(Model3.lm)
+anova(Model3.alt.lm)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(mapped.dat, aes(R18, Y18)) +
+  geom_boxplot(aes(group = cut_width(R18, 500)), outlier.alpha = 0.1) +
+geom_jitter(width = 50,alpha=0.1)
+```
+
+```{r,fig.width=8,fig.height=5}
+ggplot(mapped.dat, aes(R18,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(mapped.dat, aes(R18,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1,color=cbPalette[2]) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(mapped.dat, aes(Y17,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1,color=cbPalette[2]) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggplot(mapped.dat, aes(Y17,R18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1,color=cbPalette[2]) + geom_smooth(se=FALSE,method='lm',color=grey)
+```
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(mapped.dat, aes(AR18,Y18)) + scale_color_manual(values=cbPalette) +
+geom_point(size=1) + geom_smooth(se=FALSE)
+```
+
+
+
+```{r,fig.width=8,fig.height=5,eval=FALSE}
+ggplot(mapped.dat, aes(R18,Y18)) + geom_point(size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth()
+```
+
+```{r,fig.width=8,fig.height=5,eval=FALSE}
+ggplot(mapped.dat, aes(AR18,Y18)) +
+geom_point(aes(color=Variety), size=1) + geom_smooth(aes(color=Variety)) + scale_color_manual(values=cbPalette)
+```
+
+
+
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(mapped.dat, aes(Y16,R18)) + geom_point(size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(se=FALSE)
+```
+
+
+
+
+```{r,fig.width=8,fig.height=5}
+ggplot(mapped.dat, aes(Y16,Y18)) + geom_point(size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(se=FALSE)
+```
+
+```{r,fig.width=8,fig.height=5}
+ggplot(mapped.dat, aes(Y17,Y18)) + geom_point(size=1) + scale_color_manual(values=cbPalette) +
+ geom_smooth(se=FALSE)
+```
+
+
+TODO : optimize grid size
+
+# Generalized Additive Model
+
+```{r}
+
+red.gam <- gam(Y18 ~  Y17, data=common.dat)
+lm.gam <- gam(Y18 ~ R18 + Y17, data=common.dat)
+gam.check(red.gam)
+gam.check(lm.gam)
+```
+
+```{r}
+red.s.gam <- gam(Y18 ~ s(Y17), data=common.dat)
+s.gam <- gam(Y18 ~ s(R18) + s(Y17), data=common.dat)
+gam.check(red.s.gam)
+gam.check(s.gam)
+```
+```{r}
+k9.gam <- gam(Y18 ~ s(R18,k=8) + s(Y17,k=8), data=common.dat)
+```
+
+```{r}
+summary(lm.gam)
+summary(s.gam)
+summary(k9.gam)
+
+anova(lm.gam)
+anova(s.gam)
+anova(k9.gam)
+```
+
+```{r}
+red.gam <- gam(Y18 ~  Y17 + Y16 + Y15 + Y13, data=common.dat)
+lm.gam <- gam(Y18 ~ R18 + Y17 + Y16 + Y15 + Y13, data=common.dat)
+gam.check(red.gam)
+gam.check(lm.gam)
+```
+
+```{r}
+red.s.gam <- gam(Y18 ~ s(Y17) + s(Y16) + s(Y15) + s(Y13), data=common.dat)
+s.gam <- gam(Y18 ~ s(R18) + s(Y17) + s(Y16) + s(Y15) + s(Y13), data=common.dat)
+gam.check(red.s.gam)
+gam.check(s.gam)
+```
+```{r}
+k9.gam <- gam(Y18 ~ s(R18,k=9) + s(Y17,k=9) + s(Y16,k=9) + s(Y15,k=9) + s(Y13,k=9), data=common.dat)
+```
+
+```{r}
+summary(lm.gam)
+summary(s.gam)
+summary(k9.gam)
+
+anova(lm.gam)
+anova(s.gam)
+anova(k9.gam)
+```
+
+```{r}
+plot(lm.gam,pages=1,residuals=TRUE,all.terms=TRUE,shade=TRUE,shade.col=2)
+plot(s.gam,pages=1,residuals=TRUE,all.terms=TRUE,shade=TRUE,shade.col=2)
+plot(k9.gam,pages=1,residuals=TRUE,all.terms=TRUE,shade=TRUE,shade.col=2)
+```
+
+```{r,eval=FALSE}
+seed.2018.dat <- grid.field(seed.2018.dat)
+cells.seed.dat$AR18 <- aggregate(AppliedRate ~ Row + Column,data=mapped.dat,FUN=mean,na.rm=TRUE)$AppliedRate
+```
+
+
+
+
+
+
+
+```{r, echo=FALSE,eval=FALSE}
+library(DiagrammeR)
+DiagrammeR::grViz("digraph rmarkdown {Rate -> Yield}", height=200)
+```
+
+```{r, echo=FALSE,eval=FALSE}
+DiagrammeR::grViz("digraph rmarkdown {
+                 Fertility -> Rate  
+                 Fertility -> Yield}", height=200)
+```
+
+```{r, echo=FALSE,eval=FALSE}
+DiagrammeR::grViz('digraph rmarkdown {
+                 Fertility -> Rate  
+                 Rate -> Yield [ style=dashed label=indirect ]
+                 Fertility -> Yield}', height=200)
+```
+
+
+```{r, echo=FALSE,eval=FALSE}
+DiagrammeR::grViz('digraph rmarkdown {
+                 Fertility -> ControlRate  
+                 ControlRate -> AppliedRate [style=dashed]
+                 AppliedRate -> Yield [style=dashed]
+                 Fertility -> Yield}', height=200)
+```
+
+
+
+```{r}
+Model2_dag <- dagify(Y18 ~ R18,
+       R18 ~ Y17,
+       Y18 ~ Y17,
+       labels = c("Y18" = "Yield\n 2018", 
+                  "R18" = "Seeding Rate",
+                  "Y17" = "Yield \n2017"),
+       #latent = "unhealthy",
+       #exposure = "smoking",
+       outcome = "Y18")
+
+ggdag(Model2_dag, text = FALSE, use_labels = "label")
+```
+
+
+
+
+```{r,fig.width=8,fig.height=4.5}
+Model2_dag <- dagify(Y18 ~ R18,
+       Y18 ~ Y17,
+       labels = c("Y18" = "Yield\n 2018", 
+                  "R18" = "Seeding Rate",
+                  "Y17" = "Yield \n2017"),
+       #latent = "unhealthy",
+       #exposure = "smoking",
+       outcome = "Y18")
+
+ggdag(Model2_dag, text = FALSE, use_labels = "label")
+```
+
+
+
+
