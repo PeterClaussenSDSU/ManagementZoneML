@@ -44,7 +44,12 @@ grid.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean
   harvest.dat$Column <- ceiling(harvest.dat$Longitude/grid.width[2])
   return(harvest.dat)
 }
+
 aggregate.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
+  #added Nov 16 2020
+  #there are some stray points in the grid maps, we should trim to 0,0
+  harvest.dat$Latitude <- harvest.dat$Latitude-min(harvest.dat$Latitude)
+  harvest.dat$Longitude <- harvest.dat$Longitude-min(harvest.dat$Longitude)
   harvest.dat$Row <- ceiling(harvest.dat$Latitude/grid.width[1])
   harvest.dat$Column <- ceiling(harvest.dat$Longitude/grid.width[2])
   fmla <- as.formula(paste(response,'~ Row + Column'))
@@ -93,7 +98,13 @@ krig.yield.fn <- function(harvest,seed,rng=40,locations=~Longitude+Latitude,idw=
 
 # Introduction
 
+We wish to replicate the analysis outlined in [CausalInferenceA](./CausalInferenceA.html). This may be the more interesting data set, because we have a strip trial, Soybeans at constant seeding rate in 2019, in between two seasons of variable rate Corn. Analysis of these data is a challenge because,
 
+1. We want to project variable rate seeding onto yield maps (or vice-versa) to determine if seeding rate affects yield.
+2. We want to project a spray map (strips) onto a yield map to determine if treatment affected yield
+3. We want to project multiple yield maps onto a single set of common points to determine the degree that prior years' yield affects yield maps.
+
+This particular field has many incipent wetlands and salt seeps, which leads to missing data.
 
 # Data 
 
@@ -111,10 +122,12 @@ seed.2018.dat <-read.csv(file='./data/B 2018 Corn Seeding.csv')
 harvest.2019.dat <- read.csv(file='./data/B 2019 Soybeans Harvest.csv')
 treated.2019.dat <- read.csv(file='./data/B 2019 Soybeans Treated.csv')
 seed.2020.dat <-read.csv(file='./data/B 2020 Corn Seeding.csv')
+harvest.2020.dat <- read.csv(file='./data/B 2020 Corn Harvest.csv')
 ```
 
 
 West side of the field is a long, thin strip, we can remove it.
+
 ```{r}
 left = 1000
 harvest.2013.dat <- harvest.2013.dat[harvest.2013.dat$Longitude >left,]
@@ -127,13 +140,16 @@ seed.2018.dat <- seed.2018.dat[seed.2018.dat$Longitude >left,]
 harvest.2019.dat <- harvest.2019.dat[harvest.2019.dat$Longitude >left,]
 treated.2019.dat <- treated.2019.dat[treated.2019.dat$Longitude >left,]
 seed.2020.dat <- seed.2020.dat[seed.2020.dat$Longitude >left,]
+harvest.2020.dat <- harvest.2020.dat[harvest.2020.dat$Longitude >left,]
 ```
 
+We remove outliers
 
 ```{r}
 seed.2018.dat <- remove.seed.outliers.fn(seed.2018.dat)
 seed.2020.dat <- remove.seed.outliers.fn(seed.2020.dat)
 harvest.2019.dat <- remove.harvest.outliers.fn(harvest.2019.dat)
+harvest.2020.dat <- remove.harvest.outliers.fn(harvest.2020.dat)
 treated.2019.dat <- remove.harvest.outliers.fn(treated.2019.dat)
 harvest.2018.dat <- remove.harvest.outliers.fn(harvest.2018.dat)
 harvest.2017.dat <- remove.harvest.outliers.fn(harvest.2017.dat)
@@ -144,6 +160,8 @@ harvest.2016.dat <- remove.harvest.outliers.fn(harvest.2016.dat)
 ```
 
 # Strip Trial
+
+The 2019 field was sprayed with fungicide in 4 strips. We don't have the sprayer GPS map, but we have these mapped to the harvest passes; the sprayer covered 4 harvest passes and soybeans were harvested in rows.
 
 ```{r}
 treated.2019.dat$Pass <- treated.2019.dat$Block
@@ -281,6 +299,7 @@ cells.2015.dat <- aggregate.field(harvest.2015.dat,response='Yield')
 cells.2016.dat <- aggregate.field(harvest.2016.dat,response='Yield')
 
 cells.2019.dat <- aggregate.field(harvest.2019.dat,response='Yield')
+cells.2020.dat <- aggregate.field(harvest.2020.dat,response='Yield')
 
 sprayed.2019.dat <- aggregate.field(treated.2019.dat,response='Sprayed')
 
@@ -289,6 +308,7 @@ GridCells$Y14 <- cells.2014.dat[row.names(GridCells),'Yield']
 GridCells$Y15 <- cells.2015.dat[row.names(GridCells),'Yield']
 GridCells$Y16 <- cells.2016.dat[row.names(GridCells),'Yield']
 GridCells$Y19 <- cells.2019.dat[row.names(GridCells),'Yield']
+GridCells$Y20 <- cells.2020.dat[row.names(GridCells),'Yield']
 GridCells$S <- sprayed.2019.dat[row.names(GridCells),'Sprayed']
 
 GridCells <- GridCells[apply(GridCells,1,function(x){!any(is.na(x))}),]
@@ -386,10 +406,6 @@ model7.dag <- model2network("[Y13][Y14|Y13][Y15|Y14][RS18|Y13:Y14:Y15:Y16:Y17][Y
 model7.dag
 model7.fit = bn.fit(model7.dag, model7.dat)
 model7.fit
-#bn.fit.qqplot(model6.fit)
-strength7 <- arc.strength(model7.dag, model7.dat)
-#strength7
-#strength.plot(model7.dag, strength7)
 
 bf.strength7 <- bf.strength(model7.dag, model7.dat)
 strength.plot(model7.dag, bf.strength7)
@@ -399,10 +415,6 @@ model8.dag <- model2network("[Y13][Y14|Y13][Y15|Y14:Y13][Y16|Y15:Y14:Y13][Y17|Y1
 model8.dag
 model8.fit = bn.fit(model8.dag, model8.dat)
 model8.fit
-#bn.fit.qqplot(model6.fit)
-strength8 <- arc.strength(model8.dag, model8.dat)
-#strength8
-#strength.plot(model8.dag, strength8)
 
 bf.strength8 <- bf.strength(model8.dag, model8.dat)
 strength.plot(model8.dag, bf.strength8)
@@ -452,7 +464,7 @@ ggplot(Maps4, aes(Longitude,Latitude)) +
 geom_point(aes(colour = Value),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps") + facet_wrap(~ Map)
-
+```
 
 ```{r,fig.width=8,fig.height=4}
 ggpairs(GridCells[,c('R20','Y19','R18','Y18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
@@ -460,15 +472,12 @@ ggpairs(GridCells[,c('R20','Y19','R18','Y18','Y17','Y16','Y15','Y13')], aes(alph
 
 
 ```{r}
-model9.dat <- GridCells[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')]
-model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18:Y17:Y16:Y15][R20|Y19:Y18:Y17:Y16:Y15]")
+model9.dat <- GridCells[,c('Y20','R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18:Y17:Y16:Y15][R20|Y19:Y18:Y17:Y16:Y15][Y20|R20:Y19:Y18:Y17:Y16:Y15]")
 
 model9.fit = bn.fit(model9.dag, model9.dat)
 model9.fit
 bn.fit.qqplot(model9.fit)
-strength9 <- arc.strength(model9.dag, model9.dat)
-
-strength.plot(model9.dag, strength9)
 
 bf.strength9 <- bf.strength(model9.dag, model9.dat)
 
@@ -476,7 +485,6 @@ strength.plot(model9.dag, bf.strength9)
 averaged.network(bf.strength9)
 plot(bf.strength9)
 
-strength9
 bf.strength9 
 ```
 
@@ -495,27 +503,10 @@ ggpairs(GridCells[,c('Y19','Y18','Y17','Y16','Y15','Y14','Y13')], aes(alpha = 0.
 ggpairs(GridCells[,c('R20','Y19','AR18','R18','Y18','Y17','Y16','Y15','Y14','Y13')], aes(alpha = 0.4))
 ```
 
-```{r}
-model4.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15]")
-model4.dag
-graphviz.plot(model4.dag,layout = "circo")
-model4.fit = bn.fit(model4.dag, GridCells[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')])
-model4.fit
-bn.fit.qqplot(model4.fit)
-strength4 <- arc.strength(model4.dag, GridCells[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')])
-strength4
-strength.plot(model4.dag, strength4)
+```{r,fig.width=8,fig.height=4}
+ggpairs(GridCells[,c('Y20','R20','Y19','AR18','R18','Y18','Y17','Y16','Y15','Y14','Y13')], aes(alpha = 0.4))
 ```
 
-```{r}
-model5b.dag <- model2network("[Y13][Y14|Y13][Y15|Y14:Y13][Y16|Y15:Y14:Y13][Y17|Y16:Y15:Y14:Y13][R18|Y17:Y16:Y15:Y14:Y13][AR18|R18][Y18|AR18:Y17:Y16:Y15:Y14:Y13][Y19|Y18:Y17:Y16:Y15:Y14:Y13][R20|Y19:Y18:Y17:Y16:Y15:Y14:Y13]")
-model5b.dag
-model5.fit = bn.fit(model5b.dag, GridCells[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15','Y14','Y13')])
-model5.fit
-strength5 <- arc.strength(model5b.dag, GridCells[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15','Y14','Y13')])
-strength5
-strength.plot(model5b.dag, strength5)
-```
 
 ```{r,eval=TRUE}
 #VarCorr(default.gam)
@@ -527,7 +518,7 @@ graphviz.plot(learned.dag)
 ```{r,eval=TRUE}
 #VarCorr(default.gam)
 #learned.dag = iamb(GridCells[,c('Y18',"R18","Y17","Y16","Y15")])
-learned.dag = iamb(GridCells[,c('R20','Y19','Y18','AR18',"R18","Y17","Y16","Y15","Y14","Y13")])
+learned.dag = iamb(GridCells[,c('Y20','R20','Y19','Y18','AR18',"R18","Y17","Y16","Y15","Y14","Y13")])
 graphviz.plot(learned.dag)
 ```
 
@@ -567,9 +558,6 @@ model9.dag <- model2network("[Y13][Y14|Y13][Y15|Y14:Y13][Y16|Y15][Y17|Y16:Y15][R
 model9.fit = bn.fit(model9.dag, GridCells[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15','Y14','Y13')])
 model9.fit
 bn.fit.qqplot(model9.fit)
-strength9 <- arc.strength(model9.dag, GridCells[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15','Y14','Y13')])
-strength9
-strength.plot(model9.dag, strength9)
 ```
 
 
@@ -582,8 +570,6 @@ model10.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|
 model10.fit = bn.fit(model10.dag, model10.dat)
 model10.fit
 bn.fit.qqplot(model10.fit)
-strength10 <- arc.strength(model10.dag, model10.dat)
-strength.plot(model10.dag, strength10)
 
 bf.strength10 <- bf.strength(model10.dag, model10.dat)
 
@@ -591,7 +577,6 @@ strength.plot(model10.dag, bf.strength10)
 averaged.network(bf.strength10)
 plot(bf.strength10)
 
-strength10
 bf.strength10 
 
 model11.dat <- GridCells[,c('S','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')]
@@ -600,8 +585,6 @@ model11.dag <- model2network("[S][Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR
 model11.fit = bn.fit(model11.dag, model11.dat)
 model11.fit
 bn.fit.qqplot(model11.fit)
-strength11 <- arc.strength(model11.dag, model11.dat)
-strength.plot(model11.dag, strength11)
 
 bf.strength11 <- bf.strength(model11.dag, model11.dat)
 
@@ -638,8 +621,6 @@ model12.dag <- model2network("[Y13][S][Y14|Y13][Y15|Y14:Y13][Y16|Y15:Y14:Y13][Y1
 model12.fit = bn.fit(model12.dag,model12.dat)
 model12.fit
 bn.fit.qqplot(model12.fit)
-strength12 <- arc.strength(model12.dag, model12.dat)
-strength.plot(model12.dag, strength12)
 
 bf.strength12 <- bf.strength(model12.dag, model12.dat)
 
@@ -647,7 +628,6 @@ strength.plot(model12.dag, bf.strength12)
 averaged.network(bf.strength12)
 plot(bf.strength12)
 
-strength12
 bf.strength12 
 
 
@@ -658,8 +638,6 @@ model13.dag <- model2network("[Y13][Y14|Y13][Y15|Y14:Y13][Y16|Y15:Y14:Y13][Y17|Y
 model13.fit = bn.fit(model13.dag,model13.dat)
 model13.fit
 bn.fit.qqplot(model13.fit)
-strength13 <- arc.strength(model13.dag, model13.dat)
-strength.plot(model13.dag, strength13)
 
 bf.strength13 <- bf.strength(model13.dag, model13.dat)
 
@@ -667,7 +645,6 @@ strength.plot(model13.dag, bf.strength13)
 averaged.network(bf.strength13)
 plot(bf.strength13)
 
-strength13
 bf.strength13 
 
 score(model11.dag,model11.dat,type = 'bge')
@@ -1013,37 +990,7 @@ ggpairs(seed.2018.dat[,c('R20','Y19','Y18','AR18','R18','Y17','Y16','Y15','Y14',
 ```
 
 
-```{r}
-#model4.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15]")
-#model4.dag
-#graphviz.plot(model4.dag,layout = "dot")
-model4.fit = bn.fit(model4.dag, seed.2018.dat[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')])
-model4.fit
-bn.fit.qqplot(model4.fit)
-strength4 <- arc.strength(model4.dag, seed.2018.dat[,c('Y18',"R18",'AR18',"Y17",'Y16','Y15')])
-strength4
-strength.plot(model4.dag, strength4)
-```
 
-```{r}
-model5.dag <- model2network("[Y13][Y14|Y13][Y15|Y14:Y13][Y16|Y15:Y14:Y13][Y17|Y16:Y15:Y14:Y13][R18|Y17:Y16:Y15:Y14:Y13][AR18|R18][Y18|AR18:Y17:Y16:Y15:Y14:Y13][Y19|Y18:Y17:Y16:Y15:Y14:Y13][R20|Y19:Y18:Y17:Y16:Y15:Y14:Y13]")
-# we want to compare with sprayed, but there are some missing values
-model5.dat <- seed.2018.dat[,c('R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15','Y14','Y13')]
-
-model5.fit = bn.fit(model5.dag, model5.dat)
-model5.fit
-#bn.fit.qqplot(model5.fit)
-strength5 <- arc.strength(model5.dag, model5.dat)
-strength5
-strength.plot(model5.dag, strength5)
-```
-
-
-
-
-```{r,fig.width=12,fig.height=6.75}
-ggpairs(model5.dat, aes(alpha = 0.4))
-```
 
 
 ```{r,fig.width=12,fig.height=6.75}
@@ -1056,8 +1003,6 @@ ggpairs(model6.dat, aes(alpha = 0.4))
 model10.fit = bn.fit(model10.dag,model10.dat)
 model10.fit
 bn.fit.qqplot(model10.fit)
-strength12 <- arc.strength(model10.dag, model10.dat)
-#strength.plot(model10.dag, strength12)
 
 bf.strength10 <- bf.strength(model10.dag, model10.dat)
 
@@ -1065,7 +1010,6 @@ strength.plot(model10.dag, bf.strength10)
 averaged.network(bf.strength10)
 plot(bf.strength10)
 
-strength10
 bf.strength10 
 ```
 
@@ -1078,8 +1022,6 @@ ggpairs(model11.dat, aes(alpha = 0.4))
 model11.fit = bn.fit(model11.dag,model11.dat)
 model11.fit
 bn.fit.qqplot(model11.fit)
-strength11 <- arc.strength(model11.dag, model11.dat)
-#strength.plot(model13.dag, strength13)
 
 bf.strength11 <- bf.strength(model11.dag, model11.dat)
 
@@ -1087,7 +1029,6 @@ strength.plot(model11.dag, bf.strength11)
 averaged.network(bf.strength11)
 plot(bf.strength11)
 
-strength11
 bf.strength11 
 
 score(model10.dag,model10.dat,type = 'bge')
@@ -1107,8 +1048,6 @@ ggpairs(model12.dat, aes(alpha = 0.4))
 model12.fit = bn.fit(model12.dag,model12.dat)
 model12.fit
 bn.fit.qqplot(model12.fit)
-strength12 <- arc.strength(model12.dag, model12.dat)
-#strength.plot(model12.dag, strength12)
 
 bf.strength12 <- bf.strength(model12.dag, model12.dat)
 
@@ -1116,9 +1055,7 @@ strength.plot(model12.dag, bf.strength12)
 averaged.network(bf.strength12)
 plot(bf.strength12)
 
-strength12
 bf.strength12 
-
 
 model13.dat <- treated.2019.dat[,c('Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15','Y14','Y13')]
 
@@ -1127,8 +1064,6 @@ model13.dag <- model2network("[Y13][Y14|Y13][Y15|Y14:Y13][Y16|Y15:Y14:Y13][Y17|Y
 model13.fit = bn.fit(model13.dag,model13.dat)
 model13.fit
 bn.fit.qqplot(model13.fit)
-strength13 <- arc.strength(model13.dag, model13.dat)
-#strength.plot(model13.dag, strength13)
 
 bf.strength13 <- bf.strength(model13.dag, model13.dat)
 
@@ -1136,7 +1071,6 @@ strength.plot(model13.dag, bf.strength13)
 averaged.network(bf.strength13)
 plot(bf.strength13)
 
-strength13
 bf.strength13 
 
 score(model12.dag,model12.dat,type = 'bge')
