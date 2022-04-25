@@ -1,0 +1,21 @@
+---
+title: "Bayesian Methods"
+author: "Peter Claussen"
+date: "11/10/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+From ASA 'Making the Journey from Frequentist to Bayesian Analysis'
+
+PROC MIXED/GLIMMIX - Emperical Bayes
+PROC BGLIMM (Fully Bayes using MCMC)
+
+
+
+See Peipho
