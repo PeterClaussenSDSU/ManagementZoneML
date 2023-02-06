@@ -1,0 +1,206 @@
+---
+title: "Maps"
+author: "Peter Claussen"
+date: "2023-01-12"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(gridExtra)
+grey <- "#999999"
+orange <- "#E69F00"
+skyblue <- "#56B4E9"
+bluishgreen <- "#009E73"
+yellow <- "#F0E442"
+blue <- "#0072B2"
+vermillion <- "#D55E00"
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+# Introduction
+
+In `MappingYield.Rmd`, we worked out an algorthm to determine the rectangles associated with seeding data points; this method may also be applied to yield monitor data. Here we plot some sample maps do check our work.
+
+## Field A Seeding
+
+First, we plot the entire map for the field labelled A for planting season 2018:
+
+```{r}
+source('../R/find.corners.R')
+source('../R/add.corners.R')
+seeding2018.dat <- read.csv('../data/A 2018 Corn Seeding.csv')
+seeding2020.dat <- read.csv('../data/A 2018 Corn Seeding.csv')
+harvest2018.dat <- read.csv('../data/A 2018 Corn Harvest.csv')
+harvest2017.dat <- read.csv(file='../data/A 2017 Soybean Harvest.csv')
+```
+
+```{r}
+SwathWidth = 25.24
+seeding2018.dat$SwathWidth = SwathWidth
+seeding2018.dat$Distance <- seeding2018.dat$DISTANCE*0.3048
+seeding2020.dat$SwathWidth = SwathWidth
+seeding2020.dat$Distance <- seeding2020.dat$DISTANCE*0.3048
+```
+
+
+```{r}
+seeding2018Corners.dat <- NULL
+rows = dim(seeding2018.dat)[1]
+for(i in 1:rows) {
+  current <- seeding2018.dat[i,]
+  current <- add.corners(current)$Row
+  seeding2018Corners.dat <- rbind(seeding2018Corners.dat, current)
+}
+```
+
+This bit calculates are ratio between the maps width in meters and height in meters, we can use this to set figure dimensions to make the image closer to true scale.
+```{r}
+print(EastingRng <- max(seeding2018Corners.dat$Easting) - min(seeding2018Corners.dat$Easting))
+print(NorthingRng <- max(seeding2018Corners.dat$Northing) - min(seeding2018Corners.dat$Northing))
+print(ratio <- EastingRng/NorthingRng)
+print(30/ratio)
+```
+
+```{r,fig.width=30,fig.height=18.5}
+A.plot <- ggplot(seeding2018Corners.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+#Leading edge
+A.plot <- A.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = seeding2018Corners.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+A.plot <- A.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = seeding2018Corners.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+A.plot <- A.plot + geom_segment(aes(x = FLx,  xend = BLx, y = FLy, yend = BLy), 
+                                      data = seeding2018Corners.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+A.plot <- A.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = seeding2018Corners.dat,color = cbPalette[4],linewidth = 1)
+A.plot 
+```
+
+In the middle of the field, the mapping method looks correct; we have nicely aligned rectangles. However, there is overlap in the east-west portions of the endrows. This is a little troubling, so we examine more closely the bottom portion of the field. 
+
+```{r}
+seeding2018sub.dat <- seeding2018.dat[seeding2018.dat$Easting>700,]
+seeding2018sub.dat <- seeding2018sub.dat[seeding2018sub.dat$Northing<200,]
+seeding2018subCorners.dat <- NULL
+rows = dim(seeding2018sub.dat)[1]
+for(i in 1:rows) {
+  current <- seeding2018sub.dat[i,]
+  current <- add.corners(current)$Row
+  seeding2018subCorners.dat <- rbind(seeding2018subCorners.dat, current)
+}
+```
+
+```{r}
+print(EastingRng <- max(seeding2018subCorners.dat$Easting) - min(seeding2018subCorners.dat$Easting))
+print(NorthingRng <- max(seeding2018subCorners.dat$Northing) - min(seeding2018subCorners.dat$Northing))
+print(ratio <- EastingRng/NorthingRng)
+print(30/ratio)
+```
+
+```{r,fig.width=30,fig.height=17}
+sub.plot <- ggplot(seeding2018subCorners.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+#Leading edge
+sub.plot <- sub.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = seeding2018subCorners.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+sub.plot <- sub.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = seeding2018subCorners.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+sub.plot <- sub.plot + geom_segment(aes(x = FLx,  xend = BLx, y = FLy, yend = BLy), 
+                                      data = seeding2018subCorners.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+sub.plot <- sub.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = seeding2018subCorners.dat,color = cbPalette[4],linewidth = 1)
+sub.plot 
+```
+
+So, yes, our north-south grid lines look correct; however, this is some overlap (roughly 2 rectangles) with alternating plant passes and the endrows. This may represent a problem with GPS displacement, but it also may be simple operation errors. The amount of overlap in the endrows is troubling; this implies that some yield passes during harvest may not be complete rows, and thus we will have low yields for some endrow yields. Endrows are in general problematic; there is frequently overlap. Notice on the west end, where there is some obstruction in the lower part of the field that need to be avoided; the north-south passes show sime veering to avoid this obstruction and overlap the adjacent north-south passes.
+
+We might try to define algorithm to remove overlapping planter rectangles, but for now, we will assume this is part of measurement error.
+
+For comparison, we also plot the 2020 seeding map. It looks very similar to the 2018 map.
+
+### 2020 
+```{r}
+seeding2020Corners.dat <- NULL
+rows = dim(seeding2020.dat)[1]
+for(i in 1:rows) {
+  current <- seeding2020.dat[i,]
+  current <- add.corners(current)$Row
+  seeding2020Corners.dat <- rbind(seeding2020Corners.dat, current)
+}
+```
+
+```{r}
+print(EastingRng <- max(seeding2020Corners.dat$Easting) - min(seeding2020Corners.dat$Easting))
+print(NorthingRng <- max(seeding2020Corners.dat$Northing) - min(seeding2020Corners.dat$Northing))
+print(ratio <- EastingRng/NorthingRng)
+print(30/ratio)
+```
+
+```{r,fig.width=30,fig.height=18.5}
+A.plot <- ggplot(seeding2018Corners.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+#Leading edge
+A.plot <- A.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = seeding2020Corners.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+A.plot <- A.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = seeding2020Corners.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+A.plot <- A.plot + geom_segment(aes(x = FLx,  xend = BLx, y = FLy, yend = BLy), 
+                                      data = seeding2020Corners.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+A.plot <- A.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = seeding2020Corners.dat,color = cbPalette[4],linewidth = 1)
+A.plot 
+```
+I have some concern that perhaps our method of mapping has a bias that effects east-west movement, but not north-south. We can check this by plotting a map for a field that predominantly oriented east-west. This field is labelled 'G'.
+
+## Field G
+
+```{r}
+SwathWidth = 12.1363
+seeding2017H.dat <- read.csv('../data/H 2017 Corn Seeding.csv')
+seeding2017H.dat$SwathWidth = SwathWidth
+seeding2017H.dat$Distance <- seeding2017H.dat$DISTANCE*0.3048
+seeding2017H.Corners.dat <- NULL
+rows = dim(seeding2017H.dat)[1]
+for(i in 1:rows) {
+  current <- seeding2017H.dat[i,]
+  current <- add.corners(current)$Row
+  seeding2017H.Corners.dat <- rbind(seeding2017H.Corners.dat, current)
+}
+```
+
+```{r}
+print(EastingRng <- max(seeding2017H.Corners.dat$Easting) - min(seeding2017H.Corners.dat$Easting))
+print(NorthingRng <- max(seeding2017H.Corners.dat$Northing) - min(seeding2017H.Corners.dat$Northing))
+print(ratio <- EastingRng/NorthingRng)
+print(30/ratio)
+```
+
+
+```{r,fig.width=30,fig.height=9.3}
+H.plot <- ggplot(seeding2017H.Corners.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+#Leading edge
+H.plot <- H.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = seeding2017H.Corners.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+H.plot <- H.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = seeding2017H.Corners.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+H.plot <- H.plot + geom_segment(aes(x = FLx,  xend = BLx, y = FLy, yend = BLy), 
+                                      data = seeding2017H.Corners.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+H.plot <- H.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = seeding2017H.Corners.dat,color = cbPalette[4],linewidth = 1)
+H.plot 
+```
+
+This is a little different; we don't see much overlap in the endrows on the east and west end of the field, and there looks to be more displacement in the start and ends of the east-west passes. This may be a GPS problem, or it may be an issue with our method of converting GPS corrodinates to metric distances. Perhaps I'm using the wrong projection. Or I may be using an incorrect effective planter width. I measured the swath width for a different field; this field may have been planted by a different implement.

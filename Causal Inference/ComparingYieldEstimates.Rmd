@@ -1,0 +1,432 @@
+---
+title: "Comparing Yield Estimates"
+author: "Peter Claussen"
+date: "2023-01-19"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(gridExtra)
+grey <- "#999999"
+orange <- "#E69F00"
+skyblue <- "#56B4E9"
+bluishgreen <- "#009E73"
+yellow <- "#F0E442"
+blue <- "#0072B2"
+vermillion <- "#D55E00"
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+# Introduction
+
+Our fundamental problem is to determine the effectiveness of seeding rate recommendations on corn yield. First, we wish to make a distinction in this work to a cropland and a field. We want to avoid confusion of an agricultural field with a random spatial field. A random spatial field is a mathematical entity - the realization of a random variable in two dimensions, while a cropland is a geographical region in which a farmer plants, grow and harvests crops. In common language, a farmer will call his cropland a 'field', but we want to avoid that terminology). 
+
+Briefly, in a precison agricultural context, a farmer may choose variable rate seeding to minimize cost and maximize profits of planting the cropland. In areas were the farmer may expect high yields, he may plant his crop at a higher seeding rate, on the assumption that higher yielding regions of the cropland are capable of supporting more plants. In contrast, a lower yielding region of cropland may receive less seed. Since this region of the cropland may be less fertile (as indicated by lower yields) the region will be planted at a lower seeding rate. This saves the farmer the cost of seed and may maximize yield by limiting plant competition for limited resources.
+
+This type of planting is called variable rate seeding and is usually accomplished with GPS-enabled planting equipment. The farmer determine a seeding prescription map. This is a map determined by dividing a cropland into yield production zones and prescribing seeding rates appropriate for each production zone. The seeding prescription map can be determined from various prior information - soil type, soil testing, etc. - but the simplest is to define a prescription map from prior yields. This can be done by averaging over a number of prior years harvest maps - the maps creating by instantaneous yield measures tagged with GPS coordinates as the harvester moves through the cropland.
+
+We wish to determine the effectiveness of seeding rate recommendations on yield. Is yield affected by seeding rate, or is yield a function of the inherent fertility of the field. The inherent fertility of a field can be thought of as a spatial random field measured by yearly yield maps; each year is a single realization of the random spatial variable of infinite dimension. Thus, we need to combine harvest maps with seeding maps to measure correlations at a fine geographical level; at least as fine as the seeding rate prescriptions. 
+
+For this example, we consider the mapping relationship among variable rate seeding of corn for a single cropland, with the subsequent yeild and it's relationship with the prior years yield. In this case, the seeding prescription was determine exclusively from the prior years (soybean) yield. This presents an interesting problem because corn yield may be directly affected by the prior years yeild, Soybeans are nitrogen-fixing crops; a good soybean harvest suggests a healthy stand of soybeans, thus there may be more nitrogen in the soil in regions of high soybean yield than in regions of low yeild.
+
+We will compare 2 sets of three seeding and yield maps; these will be soybean yield from 2017, the subsequent seeding maps and yield maps for 2018. Similarly, we will have seeing and yeild maps from 2019 and 2020, with soybeans in 2019 followed by corn in 2020. In both cases, soybeans were planted at a constant rate.
+
+Our first problem is mapping yield data points to seeding data points. The GPS data points are collected at one second intervals as the implement, harvester or seeder, moves through the field, thus the GPS points themselves are not easily superimposed. Further, the data are measured as point processes (i.e. a yield estimate at a specific point in time and space) but may be best thought of as areal estimates - the yield or seed density of a rectangle prescribed by the width of the implement (the *swath width*) and the distance traveled since the last recorded point.
+
+In prior documents (`MappingYield.Rmd`) we've described the process of estimating yield over an area defined by seeding rate data. This can be computationally intensive, in that in involves finding a neighborhood on the yield map surrounding a single data point, fitting a polynomial trend surface (using `gam` in R) model, then numerically integrating that model to provide an estimate of yeild over the rectangle associated with a single seeding point.
+
+A simpler method is to fit a single `gam` model of sufficient detail or coarseness to fit a yield map, then projecting that trend surface onto the points defined in a seeding map. The degree of smoothness can be controlled, but it is not obvious what is the optimal degree of smoothing. In this document, we first determine optimal smoothing of a global `gam` model in mapping yield data to a seeding map. Then we compare the optimal global model to the local smoothing used to provide areal estimates of yield associated with seeding data points.
+
+We have at hand several years of data, but we restrict our considerations in this document to corn seeding rate for 2018 or 2020 with the prior years soybean yield data from 2017 and 2019, respectively. Ultimately, we wish to determine how well seeding rates for 2018 and 2020 correlate corn yield in 2018 and 2020, compared to correlations between corn yield in 2018 and 2020 compared with soybean yield in 2017 and 2019.
+
+We don't know the true relationship between corn seeding rates and corn yield, but we do know that corn seeding rate prescriptions were derived from prior years soybean yield maps, so the relationships between seeding rate and prior yield years provide us a set of correlations that can be used to compare the two methods of mapping yield data to seeding rate over the entire area of a planted cropland.
+
+
+
+# Materials and Methods
+
+Yield data are recorded using a John Deere GPS enable harvester and seeding rate data come from a Case/IH GPS enabled seeder. The data have been converted from the original by anonymizing the location of the cropland. by converting GPS coordinates to distance in meters from a common origin in the lower left (southwest) corner of the cropland. All other variables in the data files are as recorded by the corresponding implements.
+
+We remove as outliers from the yield data as any point greater than $3 \pm sd$ from the mean. For seeding rate data, we eliminate points outside the range ${20000,32000}$ seeds/acre
+
+```{r,echo=FALSE}
+source('../../YieldDataModels/R/remove.harvest.outliers.fn.R')
+source('../../YieldDataModels/R/remove.seed.outliers.fn.R')
+source('../R/find.corners.R')
+source('../R/add.corners.R')
+source('../R/find.neighborhood.R')
+source('../R/point.in.rectangle.R')
+source('../R/numerical.integration.yield.R')
+
+harvest2017.dat <- read.csv('../data/A 2017 Soybean Harvest.csv')
+seeding2018.dat <- read.csv('../data/A 2018 Corn Seeding.csv')
+harvest2018.dat <- read.csv('../data/A 2018 Corn Harvest.csv')
+
+#harvest2017.dat <- read.csv('../data/B 2017 Soybean Harvest.csv')
+#seeding2018.dat <- read.csv('../data/B 2018 Corn Seeding.csv')
+#harvest2018.dat <- read.csv('../data/B 2018 Corn Harvest.csv')
+
+harvest2017.dat <- remove.harvest.outliers.fn(harvest2017.dat,rng=5)
+harvest2018.dat <- remove.harvest.outliers.fn(harvest2018.dat,rng=5)
+seeding2018.dat <- remove.seed.outliers.fn(seeding2018.dat)
+
+dim(seeding2018.dat)
+```
+
+```{r}
+harvest2019.dat <- read.csv(file='../data/A 2019 Soybean Harvest.csv')
+seeding2020.dat <- read.csv(file='../data/A 2020 Corn Seeding.csv')
+harvest2020.dat <- read.csv(file='../data/A 2020 Corn Harvest.csv')
+
+seeding2020.dat <- remove.seed.outliers.fn(seeding2020.dat)
+harvest2020.dat <- remove.harvest.outliers.fn(harvest2020.dat,rng=5)
+harvest2019.dat <- remove.harvest.outliers.fn(harvest2019.dat,rng=5)
+```
+
+To determine dimensions of seeding rectangles, we estimate effective swath weight (25.24 meters) (see `EffectiveSwathWidth.Rmd`) and add this to the seeding data. We also convert `DISTANCE` as recorded by the implements in feet to meters for our analysis.
+
+```{r}
+SwathWidth = 25.24
+seeding2018.dat$SwathWidth = SwathWidth
+seeding2018.dat$Distance <- seeding2018.dat$DISTANCE*0.3048
+SwathWidth = 25.24
+seeding2020.dat$SwathWidth = SwathWidth
+seeding2020.dat$Distance <- seeding2020.dat$DISTANCE*0.3048
+```
+
+We use `gam` to fit a trend surface to estimate yields for areas associated with seeding data points, from different years yield maps; see `MappingYield.Rmd`. Since this involves numeric integration and can be somewhat time consuming, we put save results to an `Rda` file and compute estimates only if not already available. We also use a function to fit neighborhoods that returns NA values if the neighborhoods are too small to fit with `gam`
+
+```{r}
+source('../R/areal.yield.estimate.R')
+```
+
+```{r,echo=FALSE}
+library(mgcv)
+if(!file.exists("ComparingYieldEstimatesA.Rda")) {
+  seeding2018.dat$Y18 <- NA
+  seeding2018.dat$Y17 <- NA
+  
+  seeding2020.dat$Y20 <- NA
+  seeding2020.dat$Y19 <- NA
+  
+  rows <- dim(seeding2018.dat)[1]
+  for(row in 1:rows) {
+    current <- seeding2018.dat[row,]
+    current <- add.corners(current)
+    seeding2018.dat$Y17[row] <- areal.yield.estimate(current, harvest2017.dat, SwathWidth)
+  } 
+  rows <- dim(seeding2020.dat)[1]
+  for(row in 1:rows) {
+    current <- seeding2020.dat[row,]
+    current <- add.corners(current)
+    seeding2020.dat$Y19[row] <- areal.yield.estimate(current, harvest2019.dat, SwathWidth)
+  }
+  save(seeding2018.dat,seeding2020.dat, file="ComparingYieldEstimatesA.Rda")
+} else {
+  load(file="ComparingYieldEstimatesA.Rda")
+}
+```
+
+## Determining smoothing of GAM fits
+
+It's not always obvious how to control the smoothing of GAM models. The implementation in R defaults to fitting a number of basis splines to the data, and that number is reached by optimizing a generalized cross-validation function. This may not lead to what we might consider optimal for this particular problem.
+
+Our goal in mapping yield to seeding is to determine the relationship between seeding rate and yield, and if this relationship can be determined to be causal. So, we don't know the true relationship between a seeding rate map and the following yield map. 
+
+However, we do know with some degree of certainty the relationship between prior years yield maps and the prescribed seeding map. In 2018, variable rate seeding was *ad hoc*; the farmer changed rate as he was planting, based on his intuition of the relative fertility in different parts of the field. This intuition may be influence by the stubble remaining in the field from the prior year. Thus, we compare, over a range of smoothing values, the relationship between yield in 2017 (soybeans) with the seeding rate for 2018 (corn), and choose a smoothing rate that maximizes the amount of variability in seeding rate for 2018 by the correspond yield in 2018.
+
+In 2020, the relationship between 2019 soybean yield and 2020 corn seeding is more direct - the prescription for seeding rates was determined entirely from the 2019 yield. Thus, we expect a much higher degree of correlation between 2019 yield and 2020 seeding.
+
+We expect `ControlRate` to be most highly correlated with prior years yield; control rate is the variable that controls the seeding rate in the planter. However, the actual seeding rate (`AppliedRate`), measured at each planter unit, is not always exactly the control rate. In our causal relationships, we expect prior yield to determine control rate and control rate determines applied rate. We can use the strength of relationships to guide us in comparing seeding rate and the following yield.
+
+```{r}
+corrmap <- data.frame(Rate = c(seeding2018.dat$ControlRate,
+                               seeding2018.dat$AppliedRate,
+                               seeding2020.dat$ControlRate,
+                               seeding2020.dat$AppliedRate),
+                      Yield = c(seeding2018.dat$Y17,
+                                seeding2018.dat$Y17,
+                                seeding2020.dat$Y19,
+                                seeding2020.dat$Y19),
+                      Measure = c(rep("Control Rate",length(seeding2018.dat$ControlRate)),
+                                  rep("Applied Rate",length(seeding2018.dat$AppliedRate)),
+                                  rep("Control Rate",length(seeding2020.dat$ControlRate)),
+                                  rep("Applied Rate",length(seeding2020.dat$AppliedRate))),
+                      Year = c(rep(2018,length(seeding2018.dat$ControlRate)),
+                               rep(2018,length(seeding2018.dat$AppliedRate)),
+                               rep(2020,length(seeding2020.dat$ControlRate)),
+                               rep(2020,length(seeding2020.dat$AppliedRate)))
+                      )
+```
+
+```{r,fig.width=6,fig.height=4}
+corrmap$Year <- as.factor(corrmap$Year)
+ggplot(corrmap, aes(Yield,Rate)) + 
+geom_point(aes(colour = Year),size=1, alpha=0.3) + scale_colour_manual(values = cbPalette) +
+labs(colour = "Year", x="Yield 2017/2019", y="Seeding Rate 2018/2020", title = "Relationship between prior year yield and seeding rate") + facet_wrap(~ Measure,nrow=4)
+```
+
+As the above figure shows, there is a clear relationship between soybean yield in 2017 and 2019 and the respective seeding rate for 2018 and 2020, and, as expected, there is a closer relationship beween yield (areal estimates) and control rate than yield and applied rate. There are a significant number of outliers, which is to be expected; yield can be highly variable and there is some overlap among seeding rate rectangles (see `Maps.Rmd`), which might distort the true relationship between seeding and yield.
+
+# Determining yield map smoothing for point estimation.
+
+As stated earlier, we wish to compare areal yield estimates - which are computationally time consuming - with point estimates of yield based a single `gam` model fit to the entire cropland. We iterate over a range of potential smoothing parameters to identify an appropriate smoothing of the yield trend surface. We will use as an optimality criteria the residual standard deviation; this can be computed from simple linear regression with rate values (`Applied` or `Control`) as the dependent variable and soybean yield from 2017/2019 as the independent variable. Soybean yield, 2017/2019, precedes seeding of corn in 2018/2020, so there is a temporal dependence implied by the data, but we have additional knowledge that yields for 2017 may have directly determined seeding rate for 2018/2020. The magnitude of residual error for these linear fits will provide us a baseline to compare the regression of seeding rates for 2018/2020 and the following corn yields - this will give use some insight into the causal relationship between seeding rate and yeilds. 
+
+Previously, I'd used optimality criteria the amount of deviance explained by a `gam` model fitting seeding rate at points in the seeding rate map with yields mapped to those points using a `gam` model. The code for these estimates are left in place, but commented out.
+
+Before we iterate over a range of smoothing ($k$) values, we fit a null model that provides a constant yeild estimate for the entire field.
+
+```{r}
+kVec = 50 + (0:14)*20
+base <- seeding2018.dat[,c("ControlRate","AppliedRate","Easting","Northing")]
+base$K = 0
+
+null.gam <- gam(Yield ~ 1, data=harvest2017.dat)
+base$Yield <- predict(null.gam,newdata=base)
+
+combined18 = base
+
+base <- seeding2020.dat[,c("ControlRate","AppliedRate","Easting","Northing")]
+base$K = 0
+null.gam <- gam(Yield ~ 1, data=harvest2019.dat)
+base$Yield <- predict(null.gam,newdata=base)
+combined20 = base
+
+plot.dat <- data.frame(K = rep(kVec, each=4))
+plot.dat$Measure <- NA
+plot.dat$Year <- NA
+plot.dat$Value <- NA
+
+idx = 1
+for(k in kVec) {
+  #2018 data
+  current <- seeding2018.dat[,c("ControlRate", "AppliedRate","Easting","Northing")]
+  current$K = k
+  
+  point.gam <- gam(Yield ~ s(Easting,Northing,k=k), data=harvest2017.dat)
+  current$Yield <- predict(point.gam,newdata=current)
+  combined18 = rbind(combined18, current)
+  
+  #yield.gam <- gam(ControlRate ~ s(Yield), data=current)
+  #dev.explained <- 1- yield.gam$deviance/yield.gam$null.deviance
+  
+  yield.lm <- lm(ControlRate ~ Yield, data=current)
+  mse <- sum(yield.lm$residuals^2)/yield.lm$df.residual
+  
+  plot.dat$Measure[idx] <- 'Control Rate'
+  #plot.dat$Value[idx] <- dev.explained*100
+  plot.dat$Value[idx] <- sqrt(mse)
+  plot.dat$Year[idx] <- 2018
+  idx = idx+1
+
+  #cat(paste("Control Rate % explained", dev.explained,', k=',k,'\n'))
+  #cat(paste("Control Rate MSE", sqrt(mse),', k=',k,'\n'))
+  
+  #yield.gam <- gam(AppliedRate ~ s(Yield), data=current)
+  #dev.explained <- 1- yield.gam$deviance/yield.gam$null.deviance
+  
+  yield.lm <- lm(AppliedRate ~ Yield, data=current)
+  mse <- sum(yield.lm$residuals^2)/yield.lm$df.residual
+  
+  #cat(paste("Applied Rate % explained", dev.explained,', k=',k,'\n'))
+  #cat(paste("Applied Rate MSE", sqrt(mse),', k=',k,'\n'))
+  plot.dat$Measure[idx] <- 'Applied Rate'
+  #plot.dat$Value[idx] <- dev.explained*100
+  plot.dat$Value[idx] <- sqrt(mse)
+  plot.dat$Year[idx] <- 2018
+  idx = idx+1
+    
+  #2019 data
+  current <- seeding2020.dat[,c("ControlRate", "AppliedRate","Easting","Northing")]
+  current$K = k
+  point.gam <- gam(Yield ~ s(Easting,Northing,k=k), data=harvest2019.dat)
+  current$Yield <- predict(point.gam,newdata=current)
+  combined20 = rbind(combined20, current)
+  
+  #yield.gam <- gam(ControlRate ~ s(Yield), data=current)
+  #dev.explained <- 1- yield.gam$deviance/yield.gam$null.deviance
+  
+    
+  yield.lm <- lm(ControlRate ~ Yield, data=current)
+  mse <- sum(yield.lm$residuals^2)/yield.lm$df.residual
+  
+  plot.dat$Measure[idx] <- 'Control Rate'
+  #plot.dat$Value[idx] <- dev.explained*100
+  plot.dat$Value[idx] <- sqrt(mse)
+  plot.dat$Year[idx] <- 2020
+  idx = idx+1
+  #cat(paste("Control Rate % explained", dev.explained,', k=',k,'\n'))
+  #cat(paste("Control Rate mse", sqrt(mse),', k=',k,'\n'))
+  
+  #yield.gam <- gam(AppliedRate ~ s(Yield), data=current)
+  #dev.explained <- 1- yield.gam$deviance/yield.gam$null.deviance
+  
+  yield.lm <- lm(AppliedRate ~ Yield, data=current)
+  mse <- sum(yield.lm$residuals^2)/yield.lm$df.residual
+  
+  #cat(paste("Applied Rate % explained", dev.explained,', k=',k,'\n'))
+  #cat(paste("Applied Rate mse", sqrt(mse),', k=',k,'\n'))
+  plot.dat$Measure[idx] <- 'Applied Rate'
+  #plot.dat$Value[idx] <- dev.explained*100
+  plot.dat$Value[idx] <- sqrt(mse)
+  plot.dat$Year[idx] <- 2020
+  idx = idx+1
+}
+```
+
+```{r,fig.width=7,fig.height=4}
+ggplot(plot.dat, aes(K,Value)) + 
+geom_point(aes(colour = Measure),size=2) + scale_colour_manual(values = cbPalette) +
+labs(colour = "Seeding Record", x="K (Smoothing Parameter)", y="Percent Explained", title = "Smoothing of Yield Maps Prior to Seeding") + facet_wrap(~ Year,nrow=1)
+```
+
+
+
+Note that the proceeding analysis and graph is based on fitting a trend surface to the 2018 and 2020 yields, then predicting yield at the seeding rate sampling points. We compare the best models (the models with smoothing parameters that explain the largest percent of deviance) to similar `gam` models fit to seeding rate and yield for each seeding rate sample point as determine by integration over rectangles associated with each seeding rate point.
+
+
+```{r}
+yield.lm <- lm(ControlRate ~ Y17, data=seeding2018.dat)
+summary(yield.lm)
+#yield.gam <- gam(ControlRate ~ s(Y17), data=seeding2018.dat)
+#summary(yield.gam)
+```
+
+```{r}
+yield.lm <- lm(AppliedRate ~ Y17, data=seeding2018.dat)
+summary(yield.lm)
+#yield.gam <- gam(AppliedRate ~ s(Y17), data=seeding2018.dat)
+#summary(yield.gam)
+```
+
+```{r}
+yield.lm <- lm(ControlRate ~ Y19, data=seeding2020.dat)
+summary(yield.lm)
+#yield.gam <- gam(ControlRate ~ s(Y19), data=seeding2020.dat)
+#summary(yield.gam)
+```
+
+```{r}
+yield.lm <- lm(AppliedRate ~ Y19, data=seeding2020.dat)
+summary(yield.lm)
+#yield.gam <- gam(AppliedRate ~ s(Y19), data=seeding2020.dat)
+#summary(yield.gam)
+```
+
+For the relationship between 2017 yield and 2018 seeding, the point estimates best smoothing models produced a residual error on the order of 775 for `Control Rate`. This is less error than areal yield estimate models, which were ~ 800. This is not surprising; the seeding rate maps were less systematic than those created in 2020.
+
+In the 2019/2020 pair, the best smoothing models, with very large $k$ were approaching residual standard error of just over 700. In contrast, the residual standard error was 642 for areal estimates.
+
+There is a meaningful difference between error rates for the two measures, `ControlRate` and `AppliedRate`. Control rate is programming by the farmer, applied rate is the rate actually planted. There is some degree of mechanical error between the intended seeding rate and the actual seeding rate. We can visualize this by
+
+```{r,fig.width=4,fig.height=4}
+rate1.dat <- seeding2018.dat[,c("AppliedRate", "ControlRate")]
+rate2.dat <- seeding2020.dat[,c("AppliedRate", "ControlRate")]
+rate1.dat$Year <- 2018
+rate2.dat$Year <- 2020
+rate.dat <- rbind(rate1.dat,rate2.dat)
+rate.dat$Year <- factor(rate.dat$Year)
+
+ggplot(rate.dat, aes(ControlRate,AppliedRate,)) + 
+geom_point(aes(colour = Year),size=1,alpha=0.3) + scale_colour_manual(values = cbPalette) +
+labs(colour = "Year", x="Control Rate", y="Applied Rate", title = "Applied Rate vs Control Rate")
+```
+
+In the next two figures, we visualize the maps of yield predicted by `gam` models with increasing larger smoothing parameters; this results in more detail in the maps.
+
+```{r,fig.width=8,fig.height=8}
+ggplot(combined18, aes(Easting,Northing)) + 
+geom_point(aes(colour = Yield),size=2) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(combined18$Yield)) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "2018 Yield Mapped to Seeding, Decreasing Smoothness") + facet_wrap(~ K,nrow=4)
+```
+
+
+```{r,fig.width=8,fig.height=8}
+ggplot(combined20, aes(Easting,Northing)) + 
+geom_point(aes(colour = Yield),size=2) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(combined20$Yield)) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "2020 Yield Mapped to Seeding, Decreasing Smoothness") + facet_wrap(~ K,nrow=4)
+```
+
+## Visual comparison of yield prediction.
+
+We fit point estimates using smoothing parameters found in the prior section - $k=175$ for the 2017/2018 data, and $k=300$ for the 2019/2020 data. We will then plot these side-by-side with seeding control rate maps and yield maps derived by the areal method.
+
+```{r}
+point.gam <- gam(Yield ~ s(Easting,Northing,k=175), data=harvest2018.dat)
+seeding2018.dat$PY18 <- predict(point.gam,newdata=seeding2018.dat)
+  
+point.gam <- gam(Yield ~ s(Easting,Northing,k=175), data=harvest2017.dat)
+seeding2018.dat$PY17 <- predict(point.gam,newdata=seeding2018.dat)
+
+point.gam <- gam(Yield ~ s(Easting,Northing,k=300), data=harvest2019.dat)
+seeding2020.dat$PY19 <- predict(point.gam,newdata=seeding2020.dat)
+  
+point.gam <- gam(Yield ~ s(Easting,Northing,k=300), data=harvest2020.dat)
+seeding2020.dat$PY20 <- predict(point.gam,newdata=seeding2020.dat)
+
+seeding2020.dat$AR20 <- seeding2020.dat$AppliedRate
+```
+
+Note, for better contrast, we use rank values for plotting.
+
+```{r}
+harvest2017.dat$YieldRank <- rank(harvest2017.dat$Yield)
+harvest2017.dat$YieldRank <- harvest2017.dat$YieldRank/max(harvest2017.dat$YieldRank)
+seeding2018.dat$Y17Rank <- rank(seeding2018.dat$Y17)
+seeding2018.dat$Y17Rank <- seeding2018.dat$Y17Rank/max(seeding2018.dat$Y17Rank)
+seeding2018.dat$RateRank <- rank(seeding2018.dat$AppliedRate)
+seeding2018.dat$RateRank <- seeding2018.dat$RateRank/max(seeding2018.dat$RateRank)
+seeding2018.dat$PRank <- rank(seeding2018.dat$PY18)
+seeding2018.dat$PRank <- seeding2018.dat$PRank/max(seeding2018.dat$PRank)
+
+seeding2020.dat$Y19Rank <- rank(seeding2020.dat$Y19)
+seeding2020.dat$Y19Rank <- seeding2020.dat$Y19Rank/max(seeding2020.dat$Y19Rank)
+seeding2020.dat$RateRank <- rank(seeding2020.dat$AppliedRate)
+seeding2020.dat$RateRank <- seeding2020.dat$RateRank/max(seeding2020.dat$RateRank)
+harvest2019.dat$YieldRank <- rank(harvest2019.dat$Yield)
+harvest2019.dat$YieldRank <- harvest2019.dat$YieldRank/max(harvest2019.dat$YieldRank)
+seeding2020.dat$PY19Rank <- rank(seeding2020.dat$PY19)
+seeding2020.dat$PY19Rank <- seeding2020.dat$PY19Rank/max(seeding2020.dat$PY19Rank)
+```
+
+# Results
+
+```{r,fig.width=6,fig.height=6}
+Maps18 <- data.frame(Easting=c(harvest2017.dat$Easting, seeding2018.dat$Easting, seeding2018.dat$Easting, seeding2018.dat$Easting),
+                   Northing=c(harvest2017.dat$Northing, seeding2018.dat$Northing,seeding2018.dat$Northing,seeding2018.dat$Northing),
+                   Value=c(harvest2017.dat$YieldRank, seeding2018.dat$Y17Rank,seeding2018.dat$PRank,seeding2018.dat$RateRank),
+                   Map=c(rep('Yield 2017 (Raw Ranks)',length(harvest2017.dat$YieldRank)),
+                          rep('Yield 2017 (Seeding Grid)',length(seeding2018.dat$Y17Rank)),
+                         rep('Yield 2017 (Point Estimate)',length(seeding2018.dat$PRank)),
+                         rep('Seeding 2018',length(seeding2018.dat$RateRank))))
+ggplot(Maps18, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield and Seeding Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+```{r,fig.width=6,fig.height=6}
+Maps20 <- data.frame(Easting=c(harvest2019.dat$Easting, seeding2020.dat$Easting,seeding2020.dat$Easting,seeding2020.dat$Easting),
+                   Northing=c(harvest2019.dat$Northing, seeding2020.dat$Northing,seeding2020.dat$Northing,seeding2020.dat$Northing),
+                   Value=c(harvest2019.dat$YieldRank, seeding2020.dat$Y19Rank,seeding2020.dat$PY19Rank,seeding2020.dat$RateRank),
+                   Map=c(rep('Yield 2019 (Raw Ranks)',length(harvest2019.dat$YieldRank)),
+                         rep('Yield 2019 (Seeding Grid)',length(seeding2020.dat$Y19Rank)),
+                         rep('Yield 2019 (Point Estimate)',length(seeding2020.dat$PY19Rank)),
+                         rep('Seeding 2020',length(seeding2020.dat$RateRank))))
+ggplot(Maps20, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield and Seeding Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+By visual inspected, the both areal yield estimates appear to more closely resemble the corresponding seeding rate maps.
+
+Thus, for further analysis of possible causal relationships among seeding rate and yield, we will use the areal method to map yield to the preceding seeding rate.
+
+

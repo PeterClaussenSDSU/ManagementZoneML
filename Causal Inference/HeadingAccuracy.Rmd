@@ -1,0 +1,25 @@
+---
+title: "How Accurate are Heading Values?"
+author: "Peter Claussen"
+date: "2023-01-12"
+output: html_document
+---
+
+
+```{r}
+seeding2018.dat <- read.csv('../data/A 2018 Corn Seeding.csv')
+```
+
+```{r}
+rows <- dim(seeding2018.dat)[1]
+seeding2018.dat$Heading = seeding2018.dat$Heading*pi/180
+seeding2018.dat$HeadingEst <- NA
+for(i in 2:rows) {
+  current <- seeding2018.dat[i,]
+  prev <- seeding2018.dat[i-1,]
+  DeltaEasting = current$Easting - prev$Easting
+  DeltaNorthing = current$Northing - prev$Northing
+  seeding2018.dat$HeadingEst[i] <- abs(atan(DeltaEasting/DeltaNorthing))
+}
+plot(HeadingEst ~ Heading,data=seeding2018.dat)
+```

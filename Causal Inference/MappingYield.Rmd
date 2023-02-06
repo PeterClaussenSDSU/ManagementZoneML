@@ -1,0 +1,882 @@
+---
+title: "Mapping Yield to an Area"
+author: "Peter Claussen"
+date: "2023-01-02"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(gridExtra)
+grey <- "#999999"
+orange <- "#E69F00"
+skyblue <- "#56B4E9"
+bluishgreen <- "#009E73"
+yellow <- "#F0E442"
+blue <- "#0072B2"
+vermillion <- "#D55E00"
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+# Introduction
+
+Consider the problem of determining the harvest yield data points from a defined rectangle, which may or may not be the same size as the rectangle swept out during harvest. For this example, we use the rectangles defined by the areas passed through with a corn seeder, in the spring prior to corn harvest. We will be working with variable rate seeding, so we wish to determine the grain yield for each rectangle associated with seeder operation. We will have three data sets, the primary data set being corn seeding for 2018 for a specific field in eastern South Dakota. 
+
+We will wish to determine both the 2018 corn harvest data, along with preceding season and crop, 2017 soybean harvest. Our ultimate goal is to compare the correlation of seeding rate with yield from both seasons to determine which have the greatest effect on 2018 corn yield - either the seeding rate prescription for 2018 versus the prior years soybean harvest.
+
+To do this, we will determine the boundaries of the area seeded for each data point interval in the seeding data - these will typically be sampled at 1 second intervals. Each sample is identified by a GPS coordinate in longitude and latitude; these points have been anonymized to be distance in meters from the lower left (southwest) corner of the field and denoted `Easting` and `Northing` The seeding map data also include `distance` traveled since the last sample and the heading of the seeder. From this, we will calculate a rectangle that may be rotated with respect to our reference grid.
+
+After have found a rectangle representing a single seeding event, we will find a larger rectangle and overlay harvest data. From the data points lying inside the larger rectangle, we will fit a two-dimensional smoothing model of low-order polynomials. From this we can compute a integral, which while provide an estimate of average yield for the seeding rectangle. We will do this for all seeding rectangles in the data set, and use these estimates for comparing effects of seeding rate on yield, compared to the prior years yield over an equivalent area.
+
+# Finding a seeding rectangle.
+
+Much of this is taken from `DrawingPlots.Rmd` in the `YieldDataModels` project. 
+
+First, we load a seeding data set.
+
+```{r}
+source('../../YieldDataModels/R/remove.harvest.outliers.fn.R')
+source('../../YieldDataModels/R/remove.seed.outliers.fn.R')
+seeding2018.dat <- read.csv('../data/A 2018 Corn Seeding.csv')
+harvest2018.dat <- read.csv('../data/A 2018 Corn Harvest.csv')
+harvest2017.dat <- read.csv(file='../data/A 2017 Soybean Harvest.csv')
+dim(seeding2018.dat)
+seeding2018.dat <- remove.seed.outliers.fn(seeding2018.dat)
+harvest2018.dat <- remove.harvest.outliers.fn(harvest2018.dat)
+harvest2017.dat <- remove.harvest.outliers.fn(harvest2017.dat)
+```
+
+We examine the data below.
+
+```{r,Maps,echo=FALSE,fig.width=12,fig.height=4}
+grid.arrange(
+  arrangeGrob(
+    ggplot(seeding2018.dat, aes(Easting,Northing)) + 
+           geom_point(aes(colour = AppliedRate),size=1) + 
+           scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(seeding2018.dat$AppliedRate)) +
+           labs(colour = "Seeding Rate", x="Easting", y="Northing", title = "Seeding Map, 2018"),
+    ggplot(harvest2018.dat, aes(Easting,Northing)) + 
+           geom_point(aes(colour = Yield),size=1) + 
+           scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(harvest2018.dat$Yield)) +
+           labs(colour = "Yield", x="Easting", y="Northing", title="Harvest Map, 2018"),
+    ggplot(harvest2017.dat, aes(Easting,Northing)) + 
+           geom_point(aes(colour = Yield),size=1) + 
+           scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(harvest2017.dat$Yield)) +
+           labs(colour = "Yield", x="Easting", y="Northing", title="Harvest Map, 2017"),
+    nrow=1
+  )
+)
+```
+
+Note that sampling locations for the yield maps do not align with the seeding map - samples are taken at different time intervals during harvest, and the harvest paths do not align, particularly given that one crop is corn and one is soybeans. The harvest headers are very different between the two crops, and while corn is typically harvested in rows, soybeans frequently are harvested at a diagonal (this to spread wear evenly among the cutters required for soybean harvest that are not used in corn harvest). There also appears to be a displacement in the GPS coordinates between seeding and harvest; this is not apparent from these plots but can be detected in figures later in this document. The spacing of corn rows is such that each seeding pass covers two harvest passes; the harvest passes should go through the 1/4 and 3/4 midpoints of a seeding pass, but this is not always the case.
+
+Further, yield data tends to be very noisy and requires smoothing to provide reasonable estimates. Thus, in this document, we examine a method to smooth yield data points over an area. Ideally, this smoothing reduces GPS displacement error as well as measurement error inherent in the harvest data.
+
+
+In another document, `EffectSwathWidth`, we estimate the effective swath width by calculating the spacing between seeding and harvest strips in a narrow rectangle across the middle of the field. This is more effective than measuring the width of the equipment, since this takes into account the space between passes. We find that seeding has an average swath width of 25.24 meters, while harvest has an effective swath width of 12.61 meters; thus, each seeding pass is two harvest passes.
+
+Swath width will determine the width of our rectangle of interest. To determine the other direction, we will use the `DISTANCE` value recorded by the GPS unit. This will be the distance travelled since the last measure value, and will be recorded in feet. Thus, we need to multiply by a conversion factor to get `Distance` in meters.
+
+```{r}
+SwathWidth = 25.24
+seeding2018.dat$SwathWidth = SwathWidth
+seeding2018.dat$Distance <- seeding2018.dat$DISTANCE*0.3048
+```
+
+However, the rectangle will frequently be rotated, relative to our frame of reference (the GPS grid). We can adjust by using the `Heading` value recorded for each point. So, we first calculate distances based on the rotation of the grid.
+
+
+Here we calculate the corners of a rectangle associated with each seeding data point, based in the heading, distance from the last measurement, and swath width. We assume the data point is the center of the leading edge of its associated rectangle.
+
+We divide the calculations into 4 conditions. $cos(\theta)$ is negative for $x=heading$ between 90 and 270; $sin(\theta)$ is negative from 180 to 360. We'll create 4 subsets based on heading angles; in our calculations of distances we multiply values so that we produce positive distances, for our convenience.
+
+```{r}
+seeding2018.dat$Heading[seeding2018.dat$Heading==360] <- 0
+headingA.dat <- seeding2018.dat[seeding2018.dat$Heading>=0 & seeding2018.dat$Heading< 20,]
+headingB.dat <- seeding2018.dat[seeding2018.dat$Heading>=90 & seeding2018.dat$Heading< 110,]
+headingC.dat <- seeding2018.dat[seeding2018.dat$Heading>=180 & seeding2018.dat$Heading< 200,]
+headingD.dat <- seeding2018.dat[seeding2018.dat$Heading>=270 & seeding2018.dat$Heading< 290,]
+```
+
+There are 442 points in headingA, 431 points in headingB, 1138 points in heading C and 422 points in headingD. I originally wanted to choose a point in the middle of each, but this gives use a lot of nearly North/South headings. From these subsets, we select a single data point to develop our algorithm to find the corners of the rectangle
+
+```{r}
+pointA.dat <- headingA.dat[1,]
+pointB.dat <- headingB.dat[1,]
+pointC.dat <- headingC.dat[1,]
+pointD.dat <- headingD.dat[1,]
+```
+
+Note that this will represent some of the more difficult points for estimation. Many of the early points recorded in the field are in the end-rows and may be at the edge of a yield. Thus, for some of the points in this document we will actually be extrapolation a good bit in order to estimate yield over an area. We only use the points for illustration; most of the points we will use later will be located far from an edge. We will, however, include these edge cases in our analysis and assume they contribute to error in our analysis.
+
+We will focus much of the next part of our discussion on an example in quadrant A; the rest of the quadrants will be analyzed using adaptations of the analysis for quandrant A.
+
+# Quadrant A (0-90 degree heading)
+
+In general, we convert sin or cos to negative or positive so that distances are all positive. We illustrate the distances to be calculated in the following figure.
+
+```{r,eval=TRUE, angles0, fig.align = 'center', out.width = "80%", fig.cap = "Calculates for headings in quadrant A (0 <= Heading < 90)"}
+knitr::include_graphics(here::here("figs", "Angles0.png"))
+```
+
+To calculate displacements (Figure \ref{fig:angles0}) from the heading angle $\theta$, we multiply the recorded angle in degrees by $2 \pi / 360$ to convert to radians. The displacement along the `Northing` axis is given by $cos(\theta) \times Distance$, where `Distance` is the distance travelled by the seeded in meters.
+
+We find the angle of the leading edge by adding 90 to `Heading`, then converting to radians as before. We've determine the total length of the leading edge, `SwathWidth` as described above. Since the point where `Heading` is recorded is in the center of the leading edge, we need to divide by 2. As can be seen in Figure \ref{fig:angles0}, we need to negate the distance calculated for `SwathNorthing` in order to produce a positive value for `SwathNorthing`
+
+```{r}
+DistanceAngle <- pointA.dat$Heading*pi/180
+DistanceNorthing <- cos(DistanceAngle)*pointA.dat$Distance
+DistanceEasting <- sin(DistanceAngle)*pointA.dat$Distance
+
+SwathAngle <- (pointA.dat$Heading+90)*pi/180
+SwathNorthing <- -cos(SwathAngle)*pointA.dat$SwathWidth/2
+SwathEasting <- sin(SwathAngle)*pointA.dat$SwathWidth/2
+```
+
+Now we set the corners of the rectangle. We denote corners Front (F) or Back (B), Left (L) or Right (R), relative to the direction of travel. We then add or subtract the appropriate distances. Calculating the corners of the leading edge is simple; we can simply add or subtract `SwathEasting` and `SwathNorthing` from the point associated with the rectangle. The calculations for the rear edge is slightly more complicated; we need to compensate for the displacement of the distance traveled (`DistanceEasting` and `DistanceNorthing`)
+
+For plotting, we save the corners in a simple data frame, but we also add the corners to the data row containing the original seeding point.
+
+```{r}
+cornersA.dat = data.frame(Y = rep(0,4),
+                         X = rep(0,4))
+row.names(cornersA.dat) = c("FR", "FL", "BR", "BL")
+
+cornersA.dat["FR", "Easting"] = pointA.dat$Easting + SwathEasting 
+cornersA.dat["FR", "Northing"] = pointA.dat$Northing - SwathNorthing
+
+cornersA.dat["FL", "Easting"] = pointA.dat$Easting - SwathEasting 
+cornersA.dat["FL", "Northing"] = pointA.dat$Northing + SwathNorthing
+
+cornersA.dat["BR", "Easting"] = pointA.dat$Easting + SwathEasting - DistanceEasting
+cornersA.dat["BR", "Northing"] = pointA.dat$Northing - SwathNorthing - DistanceNorthing 
+
+cornersA.dat["BL", "Easting"] = pointA.dat$Easting - SwathEasting - DistanceEasting
+cornersA.dat["BL", "Northing"] = pointA.dat$Northing + SwathNorthing - DistanceNorthing 
+
+pointA.dat$FRx <- cornersA.dat["FR", "Easting"]
+pointA.dat$FRy <- cornersA.dat["FR", "Northing"]
+pointA.dat$FLx <- cornersA.dat["FL", "Easting"]
+pointA.dat$FLy <- cornersA.dat["FL", "Northing"]
+
+pointA.dat$BRx <- cornersA.dat["BR", "Easting"]
+pointA.dat$BRy <- cornersA.dat["BR", "Northing"]
+pointA.dat$BLx <- cornersA.dat["BL", "Easting"]
+pointA.dat$BLy <- cornersA.dat["BL", "Northing"]
+```
+
+A simple plot to illustrate the shape of our rectangle; note the leading edge will be a thicker, solid grey line while the trailing edge will be dashed and light blue. 
+
+To be clear, leading and trailing in this case may be misleading. I think of 'leading' as the portion of the rectangle closest to the front of the implmenent, and trailing edge will be to the rear. In the action of seeding or harvest, however, the implement will travel from the trailing edge to leading edge. On the other hand, I'm making the assumption that the leading edge corresponds to the location of the GPS point associated with each data row, so the convention I'm using for leading/trailing seems most natural to me.
+
+I've also used different colors for left and right edges to help use keep oriented. The right edge is green, left edge is yellow.
+
+```{r,fig.width=4, fig.height=4}
+A.plot <- ggplot(pointA.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+A.plot = A.plot+geom_point(data=cornersA.dat,color= cbPalette[4])
+#Leading edge
+A.plot <- A.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = pointA.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+A.plot <- A.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = pointA.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+A.plot <- A.plot + geom_segment(aes(x = FLx,  xend = BLx, y = FLy, yend = BLy), 
+                                      data = pointA.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+A.plot <- A.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = pointA.dat,color = cbPalette[4],linewidth = 1)
+center = mean(cornersA.dat$Northing)
+A.plot = A.plot + ylim(c(center-SwathWidth,center+SwathWidth))
+center = mean(cornersA.dat$Easting)
+A.plot = A.plot + xlim(c(center-SwathWidth,center+SwathWidth))
+A.plot 
+```
+This plot looks reasonable, given what we've estimate (in 'EffectiveSwathWidth.Rmd`) to the the typical dimensions for swath width and distance traveled.
+
+The computations for points in the other three quadrants are similar, excepting for changes in sign of the certain displacements. Without going into details, we provide a function to find the corners and generate a plot.
+
+```{r}
+find.corners <- function(Easting, Northing, Heading, Distance, SwathWidth) {
+  ret = data.frame(Y = rep(0,4), X = rep(0,4))
+  row.names(ret) = c("FR", "FL", "BR", "BL")
+  if(0<=Heading && Heading < 90) {
+    #Quadrant A
+    DistanceAngle <- Heading*pi/180
+    SwathAngle <- (Heading+90)*pi/180
+    DistanceNorthing <- cos(DistanceAngle)*Distance
+    DistanceEasting <- sin(DistanceAngle)*Distance
+    SwathNorthing <- -cos(SwathAngle)*SwathWidth/2
+    SwathEasting <- sin(SwathAngle)*SwathWidth/2
+    
+    ret["FR", "Easting"] = Easting + SwathEasting 
+    ret["FR", "Northing"] = Northing - SwathNorthing
+    ret["FL", "Easting"] = Easting - SwathEasting 
+    ret["FL", "Northing"] = Northing + SwathNorthing
+    ret["BR", "Easting"] = Easting + SwathEasting - DistanceEasting
+    ret["BR", "Northing"] = Northing - SwathNorthing - DistanceNorthing 
+    ret["BL", "Easting"] = Easting - SwathEasting - DistanceEasting
+    ret["BL", "Northing"] = Northing + SwathNorthing - DistanceNorthing 
+ 
+  } else if(90 <= Heading && Heading < 180 ) {
+    #Quadrant B
+    DistanceAngle <- Heading*pi/180
+    SwathAngle <- (Heading+90)*pi/180
+    DistanceNorthing <- -cos(DistanceAngle)*Distance
+    DistanceEasting <- sin(DistanceAngle)*Distance
+    SwathNorthing <- cos(SwathAngle)*SwathWidth/2
+    SwathEasting <- -sin(SwathAngle)*SwathWidth/2
+
+    ret["FR", "Easting"] = Easting - SwathEasting 
+    ret["FR", "Northing"] = Northing + SwathNorthing
+    ret["FL", "Easting"] = Easting + SwathEasting 
+    ret["FL", "Northing"] = Northing - SwathNorthing
+    ret["BR", "Easting"] = Easting - SwathEasting - DistanceEasting
+    ret["BR", "Northing"] = Northing + SwathNorthing + DistanceNorthing 
+    ret["BL", "Easting"] = Easting + SwathEasting - DistanceEasting
+    ret["BL", "Northing"] = Northing - SwathNorthing + DistanceNorthing 
+  } else if(180 <= Heading && Heading < 270) {
+    #Quadrant C
+    DistanceAngle <- Heading*pi/180
+    SwathAngle <- (Heading+90)*pi/180
+    DistanceNorthing <- -cos(DistanceAngle)*Distance
+    DistanceEasting <- -sin(DistanceAngle)*Distance
+    SwathNorthing <- cos(SwathAngle)*SwathWidth/2
+    SwathEasting <- -sin(SwathAngle)*SwathWidth/2
+    
+    ret["FR", "Easting"] = Easting + SwathEasting 
+    ret["FR", "Northing"] = Northing - SwathNorthing
+    ret["FL", "Easting"] = Easting - SwathEasting 
+    ret["FL", "Northing"] = Northing + SwathNorthing
+    ret["BR", "Easting"] = Easting + SwathEasting + DistanceEasting
+    ret["BR", "Northing"] = Northing - SwathNorthing + DistanceNorthing 
+    ret["BL", "Easting"] = Easting - SwathEasting + DistanceEasting
+    ret["BL", "Northing"] = Northing + SwathNorthing + DistanceNorthing 
+  } else {
+    #Quadrant D
+    DistanceAngle <- Heading*pi/180
+    SwathAngle <- (Heading-90)*pi/180
+    DistanceNorthing <- cos(DistanceAngle)*Distance
+    DistanceEasting <- -sin(DistanceAngle)*Distance
+    SwathNorthing <- -cos(SwathAngle)*SwathWidth/2
+    SwathEasting <- -sin(SwathAngle)*SwathWidth/2
+    
+    ret["FR", "Easting"] = Easting - SwathEasting 
+    ret["FR", "Northing"] = Northing - SwathNorthing
+    ret["FL", "Easting"] = Easting + SwathEasting 
+    ret["FL", "Northing"] = Northing + SwathNorthing
+    ret["BR", "Easting"] = Easting - SwathEasting + DistanceEasting
+    ret["BR", "Northing"] = Northing - SwathNorthing - DistanceNorthing
+    ret["BL", "Easting"] = Easting + SwathEasting + DistanceEasting
+    ret["BL", "Northing"] = Northing + SwathNorthing - DistanceNorthing 
+  }
+  return(ret)
+}
+```
+
+Now, a function to add corners. This assume as an argument a row in the original data file, which includes fields `Easting`, `Northing`, `Heading`, `Distance` and `SwathWidth`. We add to the row the variables for x,y coordinates of the corners, Back Left, Front Right, etc, abbreviate BL, BR, etc.
+
+```{r}
+add.corners <- function(row) {
+  corners <- find.corners(Easting = row$Easting,
+                          Northing = row$Northing,
+                          Heading = row$Heading, 
+                          Distance = row$Distance,
+                          SwathWidth = row$SwathWidth)
+  row$FRx <- corners["FR", "Easting"]
+  row$FRy <- corners["FR", "Northing"]
+  row$FLx <- corners["FL", "Easting"]
+  row$FLy <- corners["FL", "Northing"]
+
+  row$BRx <- corners["BR", "Easting"]
+  row$BRy <- corners["BR", "Northing"]
+  row$BLx <- corners["BL", "Easting"]
+  row$BLy <- corners["BL", "Northing"]
+  return(list(Corners = corners,
+              Row = row))
+}
+```
+
+Finally, a function to recreate the plots of the rectangles. `Multiplier` determines the boundaries of the plot, relative to the swath width of the rectangle, and places the GPS point at the center of the plot.
+
+```{r}
+create.areal.plot <- function(row, Multiplier=1) {
+  res <- add.corners(row)
+  base.plot <- ggplot(res$Row, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+  base.plot = base.plot+geom_point(data=res$Corners,color= cbPalette[4])
+  #Leading edge
+  base.plot <- base.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = res$Row,color = cbPalette[1],linewidth = 2)
+  #trailing edge
+  base.plot <- base.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = res$Row,color = cbPalette[3], linewidth = 1,linetype = "dotted")
+  #left edge
+  base.plot <- base.plot + geom_segment(aes(x = FLx, xend = BLx, y = FLy, yend = BLy), 
+                                      data = res$Row,color = cbPalette[2],linewidth = 1)
+  #Right edge
+  base.plot <- base.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = res$Row,color = cbPalette[4],linewidth = 1)
+  center = res$Row$Northing
+  base.plot= base.plot + ylim(c(center-Multiplier*res$Row$SwathWidth,center+Multiplier*res$Row$SwathWidth))
+  center = res$Row$Easting
+  base.plot= base.plot + xlim(c(center-Multiplier*res$Row$SwathWidth,center+Multiplier*res$Row$SwathWidth))
+  return(base.plot)
+}
+```
+
+# Check the function
+
+We check out function by plotting rectangle representing each of the four direction of travel (Quadrants).
+
+```{r,SeedingRectangles,echo=FALSE,fig.width=12,fig.height=10}
+grid.arrange(
+  arrangeGrob(
+        create.areal.plot(pointA.dat) + ggtitle("Quadrant A"),
+        create.areal.plot(pointB.dat) + ggtitle("Quadrant B"),
+        create.areal.plot(pointC.dat) + ggtitle("Quadrant C"),
+        create.areal.plot(pointD.dat) + ggtitle("Quadrant D"),
+    nrow=2
+  )
+)
+```
+
+
+
+# Finding a neighborhood of harvest points
+
+The next step to estimating yield in the seeding rectangles we've identified above is to find harvest data points in the neighborhood of the seeding point. We'll use 2 seed swath widths to define a square with the seeding point at the center; however, we need to account for seeding rectangle at the edge or corner of the field. We illustate this computation using point A, then define a function and find and plot neighborhoods for points B, C and D.
+
+# Quadrant A
+```{r}
+Easting.upperlim = pointA.dat$Easting + 2*SwathWidth
+if(Easting.upperlim> max(harvest2018.dat$Easting)) Easting.upperlim = max(harvest2018.dat$Easting)
+
+Northing.upperlim = pointA.dat$Northing + 2*SwathWidth
+if(Northing.upperlim>max(harvest2018.dat$Northing)) Northing.upperlim = max(harvest2018.dat$Northing)
+
+Easting.lowerlim = pointA.dat$Easting - 2*SwathWidth
+if(Easting.lowerlim < min(harvest2018.dat$Easting)) Easting.lowerlim = min(harvest2018.dat$Easting)
+
+Northing.lowerlim = pointA.dat$Northing - 2*SwathWidth
+if(Northing.lowerlim < min(harvest2018.dat$Northing)) Northing.lowerlim = min(harvest2018.dat$Northing)
+
+harvestA.dat = harvest2018.dat[harvest2018.dat$Easting<Easting.upperlim,]
+harvestA.dat = harvestA.dat[harvestA.dat$Easting>Easting.lowerlim,]
+harvestA.dat = harvestA.dat[harvestA.dat$Northing>Northing.lowerlim,]
+harvestA.dat = harvestA.dat[harvestA.dat$Northing<Northing.upperlim,]
+```
+
+```{r,fig.width=4, fig.height=4}
+ANeighborhood.plot <- ggplot(pointA.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+ANeighborhood.plot = ANeighborhood.plot+geom_point(data=cornersA.dat,color= cbPalette[4])
+#Leading edge
+ANeighborhood.plot <- ANeighborhood.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = pointA.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+ANeighborhood.plot <- ANeighborhood.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = pointA.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+ANeighborhood.plot <- ANeighborhood.plot + geom_segment(aes(x = FLx,xend = BLx, y = FLy, yend = BLy), 
+                                      data = pointA.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+ANeighborhood.plot <- ANeighborhood.plot + geom_segment(aes(x = FRx,  xend = BRx, y = FRy, yend = BRy), 
+                                      data = pointA.dat,color = cbPalette[4],linewidth = 1)
+
+ANeighborhood.plot = ANeighborhood.plot + geom_point(data=harvestA.dat, aes(Easting, Northing), color=cbPalette[8],size = 1)
+ANeighborhood.plot 
+```
+
+
+```{r}
+find.neighborhood <- function(row, gps.data, Swath, Multiplier=2) {
+  Easting.UL = row$Easting + Multiplier*Swath
+  if(Easting.UL > max(gps.data$Easting)) Easting.UL <- max(gps.data$Easting)
+
+  Northing.UL = row$Northing + Multiplier*Swath
+  if(Northing.UL > max(gps.data$Northing)) Northing.UL <- max(gps.data$Northing)
+
+  Easting.LL = row$Easting - Multiplier*Swath
+  if(Easting.LL < min(gps.data$Easting)) Easting.LL <- min(gps.data$Easting)
+
+  Northing.LL = row$Northing - Multiplier*Swath
+  if(Northing.LL < min(gps.data$Northing)) Northing.LL <- min(gps.data$Northing)
+
+  ret = gps.data[gps.data$Easting<Easting.UL,]
+  ret = ret[ret$Easting>Easting.LL,]
+  ret = ret[ret$Northing>Northing.LL,]
+  ret = ret[ret$Northing<Northing.UL,]
+  return(ret)
+}
+```
+
+
+Now we create plots for the neighborhoods our our representative rectangles from each quandrant.
+
+```{r}
+BNeighborhood.plot <- create.areal.plot(pointB.dat,Multiplier=2)
+neighborhoodB.dat <- find.neighborhood(pointB.dat, harvest2018.dat, SwathWidth)
+BNeighborhood.plot = BNeighborhood.plot + geom_point(data=neighborhoodB.dat, aes(Easting, Northing), color=cbPalette[8],size = 1)
+
+CNeighborhood.plot <- create.areal.plot(pointC.dat,Multiplier=2)
+neighborhoodC.dat <- find.neighborhood(pointC.dat, harvest2018.dat, SwathWidth)
+CNeighborhood.plot = CNeighborhood.plot + geom_point(data=neighborhoodC.dat, aes(Easting, Northing), color=cbPalette[8],size = 1)
+
+DNeighborhood.plot <- create.areal.plot(pointD.dat,Multiplier=2)
+neighborhoodD.dat <- find.neighborhood(pointD.dat, harvest2018.dat, SwathWidth)
+DNeighborhood.plot = DNeighborhood.plot + geom_point(data=neighborhoodD.dat, aes(Easting, Northing), color=cbPalette[8],size = 1)
+```
+
+```{r,SeedingNeighborhoods,echo=FALSE,fig.width=12,fig.height=10}
+grid.arrange(
+  arrangeGrob(
+        ANeighborhood.plot + ggtitle("Quadrant A"),
+        BNeighborhood.plot + ggtitle("Quadrant B"),
+        CNeighborhood.plot + ggtitle("Quadrant C"),
+        DNeighborhood.plot + ggtitle("Quadrant D"),
+    nrow=2
+  )
+)
+```
+
+# Fitting a Yield Surface
+
+Now that we've found a suitable collection of harvest points, we fit a trend surface to the yield estimates. We have our choice of many models; most are a based on some number of polynomials of suitable degree. We choose a a simple model a cubic polynomial in two dimensions, $(Easting + Northing)^3$ using the `lm` function. This has the advantage of being simple to find a closed form integration, however, it leaves open the optimal degree of polynomial fit. As an alternative, we fit using `gam`, which defines a set of basis splines and optimizes using general cross validation. However, this has a disadvantage of a less straight forward integration.
+
+```{r}
+surface.lm <- lm(Yield ~ poly(Easting,3)*poly(Northing,3), data=harvestA.dat)
+summary(surface.lm)
+```
+
+```{r,fig.width=6,fig.height=6}
+par(mfrow=c(2,2))
+plot(surface.lm)
+```
+
+```{r}
+library(mgcv)
+surfaceA.gam <- gam(Yield ~ s(Easting,Northing), data=harvestA.dat)
+summary(surfaceA.gam)
+plot(surfaceA.gam)
+```
+
+It may help us to visual the smoothed trend surface for yield over the given neighborhood. I'll include these without much commnent. However, it is interesting to not the different in general shape of the yield surface for `lm` based fits to `gam` based fits - the game model has more free parameters and thus is likely to provide a better approximation.
+
+I do note that we could include higher order polynomials, but that may entail a complicated model selection process to find the appropriate degree of smoother. The `gam` fit uses a generalized cross-validation algorithm to find appropriate smoothness; the simplicity is nice here.
+
+```{r,fig.width=6,fig.height=3}
+library(rsm)
+par(mfrow=c(1,3))
+image(surface.lm, Northing ~ Easting)
+contour(surface.lm,Northing ~ Easting, image = TRUE)
+persp(surface.lm, Northing ~ Easting, zlab = "Yield, Poly 3")
+```
+
+```{r,fig.width=6,fig.height=3}
+par(mfrow=c(1,3))
+image(surfaceA.gam, Northing ~ Easting)
+contour(surfaceA.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceA.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+Since the rectangles are not very 'square' shaped, we will limit trend models to `gam` for the remaining data points.
+
+## Quadrant B
+
+```{r}
+surfaceB.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodB.dat)
+summary(surfaceB.gam)
+```
+
+```{r,fig.width=6,fig.height=3}
+par(mfrow=c(1,3))
+image(surfaceB.gam, Northing ~ Easting)
+contour(surfaceB.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceB.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+## Quadrant C
+```{r}
+surfaceC.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodC.dat)
+summary(surfaceC.gam)
+```
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceC.gam, Northing ~ Easting)
+contour(surfaceC.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceC.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+## Quadrant D
+
+```{r}
+surfaceD.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodD.dat)
+summary(surfaceD.gam)
+```
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceD.gam, Northing ~ Easting)
+contour(surfaceD.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceD.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+
+# Numerical Integration
+
+We will randomly sample points within our rectangle of interest, then predict `Yield` from our fitted `gam` instance. Briefly, we sample a number of points (in this case, 1000) that lie inside the rectable of interest. We then compute yeild estimates associated with each point. If the sampling is sufficient, the average of these points will give us an esimtate of the integral of the yield trend model over the area of the rectangle; this is an estimate of the grain yeild associated with that rectangle. 
+
+I've borrowed the idea for finding ponts inside a rectable from from https://stackoverflow.com/questions/17136084/checking-if-a-point-is-inside-a-rotated-rectangle. 
+
+```{r}
+#p is a pair of values representing `Northing` and `Easting`
+#corners is a data frame defining the four corners of a rectangle, with columns `Northing` and `Easting`
+point.in.rectangle <- function(NewPoint, CurrentRow) {
+  #P(x,y), and rectangle A(x1,y1), B(x2,y2), C(x3,y3), D(x4,y4).
+  
+  NewPoint.x = NewPoint[1]
+  NewPoint.y = NewPoint[2]
+  
+  A.x = CurrentRow$FRx
+  A.y = CurrentRow$FRy
+  B.x = CurrentRow$FLx
+  B.y = CurrentRow$FLy
+  C.x = CurrentRow$BRx
+  C.y = CurrentRow$BRy
+  D.x = CurrentRow$BLx
+  D.y = CurrentRow$BLy
+
+  #Calculate the sum of areas of APD, DPC, CPB, PBA.
+  APD = triangle.area(c(A.x,A.y), NewPoint, c(D.x,D.y))
+  DPC = triangle.area(c(D.x,D.y), NewPoint, c(C.x,C.y))
+  CPB = triangle.area(c(C.x,C.y), NewPoint, c(B.x,B.y))
+  PBA = triangle.area(c(B.x,B.y), NewPoint, c(A.x,A.y))
+  Triangle.Sums = sum(APD, DPC, CPB, PBA)
+  if(Triangle.Sums < CurrentRow$Distance * CurrentRow$SwathWidth) {
+    return(TRUE)
+  } else {
+    return(FALSE)
+  }
+}
+
+triangle.area <- function(A,B,C) {
+  Ax = A[1]
+  Ay = A[2]
+  Bx = B[1]
+  By = B[2]
+  Cx = C[1]
+  Cy = C[2]
+  return (abs((Bx * Ay - Ax * By) + (Cx * By - Bx * Cy) + (Ax * Cy - Cx * Ay) ) / 2)
+}
+```
+
+To sample points, we find the maximin range of `Northing` and `Easting` values that contain the rectangle. We draw samples values uniformly from this range, one value each for `Northing` and `Easting` and reject a sample point if it does not lie in the rectangle. We continue until we've found 1000 points inside the rectangle.
+
+The algorithm is illustrated for point A below.
+
+```{r}
+minx = min(pointA.dat[,c("FRx","FLx","BRx","BLx")])
+miny = min(pointA.dat[,c("FRy","FLy","BRy","BLy")])
+maxx = max(pointA.dat[,c("FRx","FLx","BRx","BLx")])
+maxy = max(pointA.dat[,c("FRy","FLy","BRy","BLy")])
+
+nsims = 1000
+Estimates  = data.frame(Easting = rep(0,nsims),
+                        Northing = rep(0, nsims))
+idx=1
+while (idx <= nsims) {
+  newx = runif(1, minx,maxx)
+  newy = runif(1, miny,maxy)
+  if(point.in.rectangle(c(newx,newy), pointA.dat)) {
+    Estimates$Easting[idx] = newx
+    Estimates$Northing[idx] =  newy
+    idx=idx+1
+  }
+}
+Estimates$Yield = predict(surfaceA.gam, newdata=Estimates)
+```
+
+Now we plot the seeded rectangle, the harvest point values in the neighborhood of this rectangle, and the sampled points used to integrate over the rectangle. The harvest points will be colored according to the actual `Yield` value; the sampled points will be colored according to the estimated (from the `gam` model) `Yield` values.
+
+```{r,fig.width=4, fig.height=4}
+Asample.plot <- ggplot(pointA.dat, aes(Easting, Northing)) + geom_point(color=cbPalette[6],size = 2)
+Asample.plot = Asample.plot + geom_point(data=cornersA.dat,color= cbPalette[4])
+#Leading edge
+Asample.plot <- Asample.plot + geom_segment(aes(x = FLx, xend = FRx, y = FLy, yend = FRy), 
+                                      data = pointA.dat,color = cbPalette[1],linewidth = 2)
+#trailing edge
+Asample.plot <- Asample.plot + geom_segment(aes(x = BLx, xend = BRx, y = BLy, yend = BRy), 
+                                      data = pointA.dat,color = cbPalette[3],linewidth = 1,linetype = "dotted")
+#left edge
+Asample.plot <- Asample.plot + geom_segment(aes(x = FLx, xend = BLx, y = FLy, yend = BLy), 
+                                      data = pointA.dat,color = cbPalette[2],linewidth = 1)
+#Right edge
+Asample.plot <- Asample.plot + geom_segment(aes(x = FRx, xend = BRx, y = FRy, yend = BRy), 
+                                      data = pointA.dat,color = cbPalette[4],linewidth = 1)
+Asample.plot = Asample.plot + geom_point(data=Estimates,color= cbPalette[8],size = 0.5)
+Asample.plot
+```
+
+Note that for this plot, we don't adjusted the x and y axes to be uniform; this distorts the rectangle but better shows the sampling. The estimated average `Yield` for this rectangle is computed below.
+
+```{r}
+mean(Estimates$Yield)
+```
+So, for the area planted as represented by this seeding point, we estimate an average grain yield equivalent to 229 bushels/acre.
+
+Next, we package the numeric integration algorithm as a function and test using our set of points. We default to 1000 sample points, with a limit of 10000 tries to find a point within the rectangle. The function returns a list of the mean of samples points and the number of samples.
+
+
+```{r}
+numerical.integration.yield <- function(point, gam.model, nsims=1000, max_tries=10000) {
+  minx = min(point[,c("FRx","FLx","BRx","BLx")])
+  miny = min(point[,c("FRy","FLy","BRy","BLy")])
+  maxx = max(point[,c("FRx","FLx","BRx","BLx")])
+  maxy = max(point[,c("FRy","FLy","BRy","BLy")])
+
+  Estimates  = data.frame(Easting = rep(NA,nsims),
+                        Northing = rep(NA, nsims))
+  idx=1
+  tries = 1
+  while (idx <= nsims) {
+    if(tries>max_tries) break;
+    newx = runif(1, minx,maxx)
+    newy = runif(1, miny,maxy)
+    if(point.in.rectangle(c(newx,newy), point)) {
+      Estimates$Easting[idx] = newx
+      Estimates$Northing[idx] =  newy
+      idx=idx+1
+    }
+    tries = tries+ 1
+  }
+  Estimates = Estimates[!is.na(Estimates$Easting),]
+  Estimates$Estimate = predict(gam.model, newdata=Estimates)
+  return(list(Estimates=Estimates, 
+              Estimate = mean(Estimates$Estimate),
+              N= dim(Estimates)[1]))
+}
+```
+
+```{r}
+pointA.dat <- add.corners(pointA.dat)$Row
+Aintegral.plot <- create.areal.plot(pointA.dat, Multiplier = 2)
+res = numerical.integration.yield(pointA.dat,surfaceA.gam)
+res$Estimate
+res$N
+neighborhoodA.dat <- find.neighborhood(pointA.dat, harvest2018.dat, SwathWidth)
+tmp <- neighborhoodA.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+Aintegral.plot = Aintegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+Aintegral.plot = Aintegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+```{r}
+pointB.dat <- add.corners(pointB.dat)$Row
+Bintegral.plot <- create.areal.plot(pointB.dat, Multiplier = 2)
+res = numerical.integration.yield(pointB.dat,surfaceB.gam)
+res$Estimate
+res$N
+tmp <- neighborhoodB.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+Bintegral.plot = Bintegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+Bintegral.plot = Bintegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+```{r}
+pointC.dat <- add.corners(pointC.dat)$Row
+Cintegral.plot <- create.areal.plot(pointC.dat, Multiplier = 2)
+res = numerical.integration.yield(pointC.dat,surfaceC.gam)
+res$Estimate
+res$N
+tmp <- neighborhoodC.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+Cintegral.plot = Cintegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+Cintegral.plot = Cintegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+```{r}
+pointD.dat <- add.corners(pointD.dat)$Row
+Dintegral.plot <- create.areal.plot(pointD.dat, Multiplier = 2)
+res = numerical.integration.yield(pointD.dat,surfaceD.gam)
+res$Estimate
+res$N
+tmp <- neighborhoodD.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+Dintegral.plot = Dintegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+Dintegral.plot = Dintegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+```{r,IntegralNeighborhoods,echo=FALSE,fig.width=12,fig.height=10}
+grid.arrange(
+  arrangeGrob(
+        Aintegral.plot + ggtitle("Quadrant A"),
+        Bintegral.plot + ggtitle("Quadrant B"),
+        Cintegral.plot + ggtitle("Quadrant C"),
+        Dintegral.plot + ggtitle("Quadrant D"),
+    nrow=2
+  )
+)
+```
+
+
+# Additional points
+
+In the preceding analysis, we used seeding points that were close to aligning with N,S,E and W. Here we choose points that are at 45 degrees from the major compass directions. I'm going to just present the results without further discussion; these just provide a nice check on the methodology.
+
+```{r}
+headingAa.dat <- seeding2018.dat[seeding2018.dat$Heading>=35 & seeding2018.dat$Heading< 55,]
+headingBb.dat <- seeding2018.dat[seeding2018.dat$Heading>=110 & seeding2018.dat$Heading< 130,]
+headingCc.dat <- seeding2018.dat[seeding2018.dat$Heading>=215 & seeding2018.dat$Heading< 235,]
+headingDd.dat <- seeding2018.dat[seeding2018.dat$Heading>=305 & seeding2018.dat$Heading< 325,]
+```
+
+```{r}
+pointAa.dat <- headingAa.dat[1,]
+pointBb.dat <- headingBb.dat[1,]
+pointCc.dat <- headingCc.dat[1,]
+pointDd.dat <- headingDd.dat[1,]
+```
+
+# Quadrant A
+```{r}
+neighborhoodAa.dat <- find.neighborhood(pointAa.dat, harvest2018.dat, SwathWidth)
+surfaceAa.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodAa.dat)
+summary(surfaceAa.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceAa.gam, Northing ~ Easting)
+contour(surfaceAa.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceAa.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+```{r}
+pointAa.dat <- add.corners(pointAa.dat)$Row
+base.plot <- create.areal.plot(pointAa.dat, Multiplier = 2)
+res = numerical.integration.yield(pointAa.dat,surfaceAa.gam)
+tmp <- neighborhoodAa.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+AaIntegral.plot = base.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+AaIntegral.plot = AaIntegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+# Quadrant B
+```{r}
+neighborhoodBb.dat <- find.neighborhood(pointBb.dat, harvest2018.dat, SwathWidth)
+surfaceBb.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodBb.dat)
+summary(surfaceBb.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceBb.gam, Northing ~ Easting)
+contour(surfaceBb.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceBb.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+```{r}
+pointBb.dat <- add.corners(pointBb.dat)$Row
+BbIntegral.plot <- create.areal.plot(pointBb.dat, Multiplier = 2)
+res = numerical.integration.yield(pointBb.dat,surfaceBb.gam)
+tmp <- neighborhoodBb.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+BbIntegral.plot = BbIntegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+BbIntegral.plot = BbIntegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+```{r}
+neighborhoodCc.dat <- find.neighborhood(pointCc.dat, harvest2018.dat, SwathWidth)
+surfaceCc.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodCc.dat)
+summary(surfaceCc.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceCc.gam, Northing ~ Easting)
+contour(surfaceCc.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceCc.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+```{r}
+pointCc.dat <- add.corners(pointCc.dat)$Row
+CcIntegral.plot <- create.areal.plot(pointCc.dat, Multiplier = 2)
+res = numerical.integration.yield(pointCc.dat,surfaceCc.gam)
+tmp <- neighborhoodCc.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+CcIntegral.plot = CcIntegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+CcIntegral.plot = CcIntegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+# Quadrant D
+
+```{r}
+neighborhoodDd.dat <- find.neighborhood(pointDd.dat, harvest2018.dat, SwathWidth)
+surfaceDd.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodDd.dat)
+summary(surfaceDd.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceDd.gam, Northing ~ Easting)
+contour(surfaceDd.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceDd.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+```{r}
+pointDd.dat <- add.corners(pointDd.dat)$Row
+DdIntegral.plot <- create.areal.plot(pointDd.dat, Multiplier = 2)
+res = numerical.integration.yield(pointDd.dat,surfaceDd.gam)
+tmp <- neighborhoodDd.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+DdIntegral.plot = DdIntegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+DdIntegral.plot = DdIntegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+```
+
+```{r,AdditionalIntegralNeighborhoods,echo=FALSE,fig.width=12,fig.height=10}
+grid.arrange(
+  arrangeGrob(
+        AaIntegral.plot + ggtitle("Quadrant A"),
+        BbIntegral.plot + ggtitle("Quadrant B"),
+        CcIntegral.plot + ggtitle("Quadrant C"),
+        DdIntegral.plot + ggtitle("Quadrant D"),
+    nrow=2
+  )
+)
+```
+
+Finally, we show a model typical seeding point, from the middle of the field.
+
+```{r}
+pointX.dat <- seeding2018.dat[5000,]
+neighborhoodX.dat <- find.neighborhood(pointX.dat, harvest2018.dat, SwathWidth)
+surfaceX.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodX.dat)
+summary(surfaceX.gam)
+```
+
+```{r,fig.width=4,fig.height=4}
+par(mfrow=c(1,3))
+image(surfaceX.gam, Northing ~ Easting)
+contour(surfaceX.gam,Northing ~ Easting, image = TRUE)
+persp(surfaceX.gam, Northing ~ Easting, zlab = "Yield, GAM")
+```
+
+```{r,fig.width=7, fig.height=6}
+pointX.dat <- add.corners(pointX.dat)$Row
+XIntegral.plot <- create.areal.plot(pointX.dat, Multiplier = 2)
+res = numerical.integration.yield(pointX.dat,surfaceX.gam)
+tmp <- neighborhoodX.dat[,c("Easting","Northing","Yield")]
+names(tmp)[3] <- "Estimate"
+XIntegral.plot = XIntegral.plot+geom_point(data=res$Estimates,aes(colour = Estimate),size = 0.5) + 
+  scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = median(res$Estimate))
+XIntegral.plot = XIntegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
+XIntegral.plot
+```

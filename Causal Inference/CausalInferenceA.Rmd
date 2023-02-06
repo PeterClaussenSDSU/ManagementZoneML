@@ -7,8 +7,8 @@ output:
 
 ```{r setup, include=FALSE}
 #theme_set(theme_dag())
-#since we have k-fold cross validation
 
+#since we have k-fold cross validationmn
 set.seed(1000)
 knitr::opts_chunk$set(echo = TRUE)
 library(ggplot2)
@@ -53,24 +53,24 @@ aggregate.rates <- function(dat) {
   dat$Rate <- 1000*round(dat$ControlRate/1000)
   return(aggregate(Yield ~ Rate,data=dat,mean,na.rm=TRUE))
 }
-Rates.dat <- aggregate.rates(read.csv(file='./data/fieldA.csv'))
+Rates.dat <- aggregate.rates(read.csv(file='../data/fieldA.csv'))
 Rates.dat$Field <- 'D'
-tmp <- aggregate.rates(read.csv(file='./data/fieldB.csv'))
+tmp <- aggregate.rates(read.csv(file='../data/fieldB.csv'))
 tmp$Field <- 'A'
 Rates.dat <- rbind(Rates.dat,tmp)
-tmp <- aggregate.rates(read.csv(file='./data/fieldC.csv'))
+tmp <- aggregate.rates(read.csv(file='../data/fieldC.csv'))
 tmp$Field <- 'C'
 Rates.dat <- rbind(Rates.dat,tmp)
-tmp <- aggregate.rates(read.csv(file='./data/fieldD.csv'))
+tmp <- aggregate.rates(read.csv(file='../data/fieldD.csv'))
 tmp$Field <- 'B'
 Rates.dat <- rbind(Rates.dat,tmp)
 ggplot(Rates.dat, aes(Rate,Yield,color=Field)) + scale_colour_manual(values=cbPalette) +
 geom_point(size=3) + geom_smooth(method = "lm", formula = y ~ poly(x, 3), se = FALSE)
 par(mfrow=c(2,2))
-plot(Northing ~ Easting, data=read.csv(file='./data/fieldA.csv'),main="A",pch='.')
-plot(Northing ~ Easting, data=read.csv(file='./data/fieldB.csv'),main="B",pch='.')
-plot(Northing ~ Easting, data=read.csv(file='./data/fieldC.csv'),main="C",pch='.')
-plot(Northing ~ Easting, data=read.csv(file='./data/fieldD.csv'),main="C",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='../data/fieldA.csv'),main="A",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='../data/fieldB.csv'),main="B",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='../data/fieldC.csv'),main="C",pch='.')
+plot(Northing ~ Easting, data=read.csv(file='../data/fieldD.csv'),main="C",pch='.')
 ```
 
 ```{r,fig.width=8,fig.height=4}
@@ -78,15 +78,15 @@ aggregate.rates <- function(dat) {
   dat$Rate <- 500*round(dat$ControlRate/500)
   return(aggregate(Yield ~ Rate,data=dat,mean,na.rm=TRUE))
 }
-Rates.dat <- aggregate.rates(read.csv(file='./data/fieldA.csv'))
+Rates.dat <- aggregate.rates(read.csv(file='../data/fieldA.csv'))
 Rates.dat$Field <- 'A'
-tmp <- aggregate.rates(read.csv(file='./data/fieldB.csv'))
+tmp <- aggregate.rates(read.csv(file='../data/fieldB.csv'))
 tmp$Field <- 'B'
 Rates.dat <- rbind(Rates.dat,tmp)
-tmp <- aggregate.rates(read.csv(file='./data/fieldC.csv'))
+tmp <- aggregate.rates(read.csv(file='../data/fieldC.csv'))
 tmp$Field <- 'C'
 Rates.dat <- rbind(Rates.dat,tmp)
-tmp <- aggregate.rates(read.csv(file='./data/fieldD.csv'))
+tmp <- aggregate.rates(read.csv(file='../data/fieldD.csv'))
 tmp$Field <- 'D'
 Rates.dat <- rbind(Rates.dat,tmp)
 ggplot(Rates.dat, aes(Rate,Yield,color=Field)) + scale_colour_manual(values=cbPalette) +
@@ -96,15 +96,15 @@ geom_point(size=3) + geom_smooth(method = "lm", formula = y ~ poly(x, 3), se = F
 
 ```{r,fig.width=8,fig.height=4.5}
 fields <- vector(mode='list',length=5)
-Fields <- read.csv(file='./data/fieldA.csv')
+Fields <- read.csv(file='../data/fieldA.csv')
 Fields$Field <- 'A'
-tmp <- read.csv(file='./data/fieldB.csv')
+tmp <- read.csv(file='../data/fieldB.csv')
 tmp$Field <- 'B'
 Fields <- rbind(Fields,tmp)
-tmp <- read.csv(file='./data/fieldC.csv')
+tmp <- read.csv(file='../data/fieldC.csv')
 tmp$Field <- 'C'
 Fields <- rbind(Fields,tmp)
-tmp <- read.csv(file='./data/fieldD.csv')
+tmp <- read.csv(file='../data/fieldD.csv')
 tmp$Field <- 'D'
 Fields <- rbind(Fields,tmp)
 ```
@@ -134,22 +134,22 @@ More specifically, suppose this cropland has been historically managed using uni
 
 We start with yield and seeding maps. Both include GPS coordinates with associated with either yield estimates, in bushels per acre in the case of yield maps and programmed seeding rate (`ControlRate`) and actual seeding rate (`AppliedRate`) in the case of seeding maps. The GPS coordinate where recorded as the position of the seeder or harvester at one second intervals during seeding or harvest. Since these are two distinct operations, yield sample points rarely coincide with seeding sample points. To measure correlations between seeding and yield require imputation to combine the data.
 
-In this document, we will consider two methods. In the simpler case, we impose a grid over the field and average over samples in grid cells (see `OptimalGridSize`). This has the advantage of being computationally simpler, but will be less precise. We also use inverse distance weighting (IDW) to map yield estimates to seed sample points. This may be more informative but is also noisier.
+In this document, we will consider two methods. In the simpler case, we impose a grid over the field and average over samples in grid cells (see `iOptimalGridSize`). This has the advantage of being computationally simpler, but will be less precise. We also use inverse distance weighting (IDW) to map yield estimates to seed sample points. This may be more informative but is also noisier.
 
 
 
 ## Load Data
 
 ```{r,eval=TRUE}
-harvest.2013.dat <- read.csv(file='./data/A 2013 Soybeans Harvest.csv')
-harvest.2015.dat <- read.csv(file='./data/A 2015 Wheat Harvest.csv')
-harvest.2018.dat <- read.csv(file='./data/A 2018 Corn Harvest.csv')
-harvest.2016.dat <- read.csv(file='./data/A 2016 Corn Harvest.csv')
-harvest.2017.dat <- read.csv(file='./data/A 2017 Soybeans Harvest.csv')
-seed.2018.dat <-read.csv(file='./data/A 2018 Corn Seeding.csv')
-harvest.2019.dat <- read.csv(file='./data/A 2019 Soybeans Harvest.csv')
-seed.2020.dat <-read.csv(file='./data/A 2020 Corn Seeding.csv')
-harvest.2020.dat <-read.csv(file='./data/A 2020 Corn Harvest.csv')
+harvest.2013.dat <- read.csv(file='../data/A 2013 Soybeans Harvest.csv')
+harvest.2015.dat <- read.csv(file='../data/A 2015 Wheat Harvest.csv')
+harvest.2018.dat <- read.csv(file='../data/A 2018 Corn Harvest.csv')
+harvest.2016.dat <- read.csv(file='../data/A 2016 Corn Harvest.csv')
+harvest.2017.dat <- read.csv(file='../data/A 2017 Soybeans Harvest.csv')
+seed.2018.dat <-read.csv(file='../data/A 2018 Corn Seeding.csv')
+harvest.2019.dat <- read.csv(file='../data/A 2019 Soybeans Harvest.csv')
+seed.2020.dat <-read.csv(file='../data/A 2020 Corn Seeding.csv')
+harvest.2020.dat <-read.csv(file='../data/A 2020 Corn Harvest.csv')
 ```
 
 Screen for outliers.
@@ -169,10 +169,10 @@ harvest.2016.dat <- remove.harvest.outliers.fn(harvest.2016.dat)
 
 
 ```{r,eval=FALSE}
-harvest.2018.dat <- read.csv(file='./data/E 2018 Corn Harvest.csv')
-harvest.2016.dat <- read.csv(file='./data/E 2016 Corn Harvest.csv')
-harvest.2017.dat <- read.csv(file='./data/E 2017 Soybean Harvest.csv')
-seed.2018.dat <-read.csv(file='./data/E 2018 Corn Seeding.csv')
+harvest.2018.dat <- read.csv(file='../data/E 2018 Corn Harvest.csv')
+harvest.2016.dat <- read.csv(file='../data/E 2016 Corn Harvest.csv')
+harvest.2017.dat <- read.csv(file='../data/E 2017 Soybean Harvest.csv')
+seed.2018.dat <-read.csv(file='../data/E 2018 Corn Seeding.csv')
 ```
 
 It is easier to visualize using ranks.
@@ -190,12 +190,12 @@ seed.2020.dat$RateRank <- seed.2020.dat$RateRank/max(seed.2020.dat$RateRank)
 Plot the seeding and yield maps for 2018
 
 ```{r,fig.width=8,fig.height=4.5}
-Maps <- data.frame(Longitude=c(harvest.2018.dat$Longitude,seed.2018.dat$Longitude),
-                   Latitude=c(harvest.2018.dat$Latitude,seed.2018.dat$Latitude),
+Maps <- data.frame(Easting=c(harvest.2018.dat$Easting,seed.2018.dat$Easting),
+                   Northing=c(harvest.2018.dat$Northing,seed.2018.dat$Northing),
                    Value=c(harvest.2018.dat$YieldRank,seed.2018.dat$RateRank),
                    Map=c(rep('Yield',length(harvest.2018.dat$YieldRank)),
                          rep('Seeding',length(seed.2018.dat$RateRank))))
-ggplot(Maps, aes(Longitude,Latitude)) + 
+ggplot(Maps, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=0.5) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Seeding and Yield (2018)") + facet_wrap(~ Map)
@@ -209,12 +209,12 @@ harvest.2017.dat$YieldRank <- harvest.2017.dat$YieldRank/max(harvest.2017.dat$Yi
 ```
 
 ```{r,fig.width=8,fig.height=4.5}
-Maps <- data.frame(Longitude=c(harvest.2017.dat$Longitude,seed.2018.dat$Longitude),
-                   Latitude=c(harvest.2017.dat$Latitude,seed.2018.dat$Latitude),
+Maps <- data.frame(Easting=c(harvest.2017.dat$Easting,seed.2018.dat$Easting),
+                   Northing=c(harvest.2017.dat$Northing,seed.2018.dat$Northing),
                    Value=c(harvest.2017.dat$YieldRank,seed.2018.dat$RateRank),
                    Map=c(rep('Yield',length(harvest.2017.dat$YieldRank)),
                          rep('Seeding',length(seed.2018.dat$RateRank))))
-ggplot(Maps, aes(Longitude,Latitude)) + 
+ggplot(Maps, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Seeding (2018) and Yield (2017)") + facet_wrap(~ Map)
@@ -222,25 +222,25 @@ labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Seeding (2018
 
 
 ```{r,fig.width=8,fig.height=4.5}
-Maps <- data.frame(Longitude=c(harvest.2017.dat$Longitude,harvest.2018.dat$Longitude),
-                   Latitude=c(harvest.2017.dat$Latitude,harvest.2018.dat$Latitude),
+Maps <- data.frame(Easting=c(harvest.2017.dat$Easting,harvest.2018.dat$Easting),
+                   Northing=c(harvest.2017.dat$Northing,harvest.2018.dat$Northing),
                    Value=c(harvest.2017.dat$YieldRank,harvest.2018.dat$YieldRank),
                    Map=c(rep('Yield 2017',length(harvest.2017.dat$YieldRank)),
                          rep('Yield 2018',length(harvest.2018.dat$YieldRank))))
-ggplot(Maps, aes(Longitude,Latitude)) + 
+ggplot(Maps, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=0.5) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield 2017 and 2018") + facet_wrap(~ Map)
 ```
 
 ```{r,fig.width=6,fig.height=6}
-Maps <- data.frame(Longitude=c(harvest.2017.dat$Longitude,harvest.2018.dat$Longitude,seed.2018.dat$Longitude),
-                   Latitude=c(harvest.2017.dat$Latitude,harvest.2018.dat$Latitude,seed.2018.dat$Latitude),
+Maps <- data.frame(Easting=c(harvest.2017.dat$Easting,harvest.2018.dat$Easting,seed.2018.dat$Easting),
+                   Northing=c(harvest.2017.dat$Northing,harvest.2018.dat$Northing,seed.2018.dat$Northing),
                    Value=c(harvest.2017.dat$YieldRank,harvest.2018.dat$YieldRank,seed.2018.dat$RateRank),
                    Map=c(rep('Yield 2017',length(harvest.2017.dat$YieldRank)),
                          rep('Yield 2018',length(harvest.2018.dat$YieldRank)),
                          rep('Seeding 2018',length(seed.2018.dat$RateRank))))
-ggplot(Maps, aes(Longitude,Latitude)) + 
+ggplot(Maps, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=0.5) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Correlation Maps") + facet_wrap(~ Map,nrow=2)
@@ -253,13 +253,13 @@ Since there is a spatial component, we'll start with a simplified spatial analys
 
 ```{r,echo=FALSE}
 grid.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
-  harvest.dat$Row <- ceiling(harvest.dat$Latitude/grid.width[1])
-  harvest.dat$Column <- ceiling(harvest.dat$Longitude/grid.width[2])
+  harvest.dat$Row <- ceiling(harvest.dat$Northing/grid.width[1])
+  harvest.dat$Column <- ceiling(harvest.dat$Easting/grid.width[2])
   return(harvest.dat)
 }
 aggregate.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
-  harvest.dat$Row <- ceiling(harvest.dat$Latitude/grid.width[1])
-  harvest.dat$Column <- ceiling(harvest.dat$Longitude/grid.width[2])
+  harvest.dat$Row <- ceiling(harvest.dat$Northing/grid.width[1])
+  harvest.dat$Column <- ceiling(harvest.dat$Easting/grid.width[2])
   fmla <- as.formula(paste(response,'~ Row + Column'))
   tmp <- aggregate(fmla,data=harvest.dat,FUN=FUN,na.rm=TRUE)
   count <- aggregate(fmla,data=harvest.dat,FUN=length)
@@ -605,16 +605,16 @@ harvest.2015.dat$YieldRank <- harvest.2015.dat$YieldRank/max(harvest.2015.dat$Yi
 harvest.2013.dat$YieldRank <- rank(harvest.2013.dat$Yield)
 harvest.2013.dat$YieldRank <- harvest.2013.dat$YieldRank/max(harvest.2013.dat$YieldRank)
 
-Maps5 <- data.frame(Longitude=c(harvest.2018.dat$Longitude,
-                                harvest.2017.dat$Longitude,
-                                harvest.2016.dat$Longitude,
-                                harvest.2015.dat$Longitude,
-                                seed.2018.dat$Longitude),
-                   Latitude=c(harvest.2018.dat$Latitude,
-                              harvest.2017.dat$Latitude,
-                              harvest.2016.dat$Latitude,
-                              harvest.2015.dat$Latitude,
-                              seed.2018.dat$Latitude),
+Maps5 <- data.frame(Easting=c(harvest.2018.dat$Easting,
+                                harvest.2017.dat$Easting,
+                                harvest.2016.dat$Easting,
+                                harvest.2015.dat$Easting,
+                                seed.2018.dat$Easting),
+                   Northing=c(harvest.2018.dat$Northing,
+                              harvest.2017.dat$Northing,
+                              harvest.2016.dat$Northing,
+                              harvest.2015.dat$Northing,
+                              seed.2018.dat$Northing),
                    Value=c(harvest.2018.dat$YieldRank,
                            harvest.2017.dat$YieldRank,
                            harvest.2016.dat$YieldRank,
@@ -625,7 +625,7 @@ Maps5 <- data.frame(Longitude=c(harvest.2018.dat$Longitude,
                          rep('Y16',length(harvest.2016.dat$YieldRank)),
                          rep('Y15',length(harvest.2015.dat$YieldRank)),
                          rep('R18',length(seed.2018.dat$RateRank))))
-ggplot(Maps5, aes(Longitude,Latitude)) + 
+ggplot(Maps5, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=.5) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Multiple Years") + facet_wrap(~ Map)
@@ -661,7 +661,7 @@ ggdag(model6_dag, text = TRUE)
 ```{r,fig.width=7,fig.height=5,eval=FALSE}
 harvest.2019.dat$YieldRank <- rank(harvest.2019.dat$Yield)
 harvest.2019.dat$YieldRank <- harvest.2019.dat$YieldRank/max(harvest.2019.dat$YieldRank)
-ggplot(harvest.2019.dat, aes(Longitude,Latitude)) + 
+ggplot(harvest.2019.dat, aes(Easting,Northing)) + 
 geom_point(aes(colour = YieldRank),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue) +
 labs(colour = "Yield (Relative Rank)", x="Easting", y="Northing", title = "2019")
@@ -910,8 +910,8 @@ ggpairs(GridCells[,c('Y19','Y18','AR18','Y17','Y16','Y15','Y13')], aes(alpha = 0
 ```
 
 
-```{r,fig.width=8,fig.height=4}
-ggpairs(GridCells[,c('R20','Y19','R18','Y18','Y17','Y16','Y15','Y13')], aes(alpha = 0.4))
+```{r,fig.width=9,fig.height=5}
+ggpairs(GridCells[,c('Y20','Y19','Y18','Y17','Y16','Y15','Y13','R20','R18')], aes(alpha = 0.4))
 ```
 
 
@@ -949,16 +949,16 @@ harvest.2013.dat$YieldRank <- harvest.2013.dat$YieldRank/max(harvest.2013.dat$Yi
 harvest.2019.dat$YieldRank <- rank(harvest.2019.dat$Yield)
 harvest.2019.dat$YieldRank <- harvest.2019.dat$YieldRank/max(harvest.2019.dat$YieldRank)
 
-Maps4 <- data.frame(Longitude=c(#harvest.2018.dat$Longitude,
-                                harvest.2017.dat$Longitude,
-                                seed.2018.dat$Longitude,
-                                harvest.2019.dat$Longitude,
-                                seed.2020.dat$Longitude),
-                   Latitude=c(#harvest.2018.dat$Latitude,
-                              harvest.2017.dat$Latitude,
-                              seed.2018.dat$Latitude,
-                              harvest.2019.dat$Latitude,
-                              seed.2020.dat$Latitude),
+Maps4 <- data.frame(Easting=c(#harvest.2018.dat$Easting,
+                                harvest.2017.dat$Easting,
+                                seed.2018.dat$Easting,
+                                harvest.2019.dat$Easting,
+                                seed.2020.dat$Easting),
+                   Northing=c(#harvest.2018.dat$Northing,
+                              harvest.2017.dat$Northing,
+                              seed.2018.dat$Northing,
+                              harvest.2019.dat$Northing,
+                              seed.2020.dat$Northing),
                    Value=c(#harvest.2018.dat$YieldRank,
                            harvest.2017.dat$YieldRank,
                            seed.2018.dat$RateRank,
@@ -969,7 +969,7 @@ Maps4 <- data.frame(Longitude=c(#harvest.2018.dat$Longitude,
                          rep("Seed 2018",length(seed.2018.dat$RateRank)),
                          rep('Harvest 2019',length(harvest.2019.dat$YieldRank)),
                          rep('Seed 2020',length(seed.2020.dat$RateRank))))
-ggplot(Maps4, aes(Longitude,Latitude)) + 
+ggplot(Maps4, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps") + facet_wrap(~ Map)
@@ -978,7 +978,7 @@ labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding M
 # Proposed
 
 ```{r,fig.width=8,fig.height=4.5}
-seed.2020.dat$Pass = floor(seed.2020.dat$Longitude/25)
+seed.2020.dat$Pass = floor(seed.2020.dat$Easting/25)
 CR <- sample(unique(seed.2020.dat$Pass),10) 
 CR = 20 + 2*(1:5)
 seed.2020.dat$CR <- seed.2020.dat$Pass %in% CR
@@ -988,20 +988,20 @@ seed.2020.dat$Proposed[seed.2020.dat$CR] <- median(seed.2020.dat$ControlRate)
 seed.2020.dat$PS <- rank(seed.2020.dat$Proposed)
 seed.2020.dat$PS <- seed.2020.dat$PS/max(seed.2020.dat$PS)
 
-ggplot(seed.2020.dat, aes(Longitude,Latitude)) + 
+ggplot(seed.2020.dat, aes(Easting,Northing)) + 
 geom_point(aes(colour = PS),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps")
 
-Maps2 <- data.frame(Longitude=c(seed.2020.dat$Longitude,
-                                seed.2020.dat$Longitude),
-                   Latitude=c(seed.2020.dat$Latitude,
-                              seed.2020.dat$Latitude),
+Maps2 <- data.frame(Easting=c(seed.2020.dat$Easting,
+                                seed.2020.dat$Easting),
+                   Northing=c(seed.2020.dat$Northing,
+                              seed.2020.dat$Northing),
                    Value=c(seed.2020.dat$RateRank,
                            seed.2020.dat$PS),
                    Map=c(rep('Actual 2020',length(seed.2020.dat$RateRank)),
                          rep('Proposed 2020',length(seed.2020.dat$PS))))
-ggplot(Maps2, aes(Longitude,Latitude)) + 
+ggplot(Maps2, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Experimental Design") + facet_wrap(~ Map)
@@ -1020,16 +1020,16 @@ harvest.2013.dat$YieldRank <- harvest.2013.dat$YieldRank/max(harvest.2013.dat$Yi
 harvest.2019.dat$YieldRank <- rank(harvest.2019.dat$Yield)
 harvest.2019.dat$YieldRank <- harvest.2019.dat$YieldRank/max(harvest.2019.dat$YieldRank)
 
-Maps4 <- data.frame(Longitude=c(#harvest.2018.dat$Longitude,
-                                harvest.2017.dat$Longitude,
-                                seed.2018.dat$Longitude,
-                                harvest.2019.dat$Longitude,
-                                seed.2020.dat$Longitude),
-                   Latitude=c(#harvest.2018.dat$Latitude,
-                              harvest.2017.dat$Latitude,
-                              seed.2018.dat$Latitude,
-                              harvest.2019.dat$Latitude,
-                              seed.2020.dat$Latitude),
+Maps4 <- data.frame(Easting=c(#harvest.2018.dat$Easting,
+                                harvest.2017.dat$Easting,
+                                seed.2018.dat$Easting,
+                                harvest.2019.dat$Easting,
+                                seed.2020.dat$Easting),
+                   Northing=c(#harvest.2018.dat$Northing,
+                              harvest.2017.dat$Northing,
+                              seed.2018.dat$Northing,
+                              harvest.2019.dat$Northing,
+                              seed.2020.dat$Northing),
                    Value=c(#harvest.2018.dat$YieldRank,
                            harvest.2017.dat$YieldRank,
                            seed.2018.dat$RateRank,
@@ -1040,7 +1040,7 @@ Maps4 <- data.frame(Longitude=c(#harvest.2018.dat$Longitude,
                          rep("Seed 2018",length(seed.2018.dat$RateRank)),
                          rep('Harvest 2019',length(harvest.2019.dat$YieldRank)),
                          rep('Seed 2020',length(seed.2020.dat$RateRank))))
-ggplot(Maps4, aes(Longitude,Latitude)) + 
+ggplot(Maps4, aes(Easting,Northing)) + 
 geom_point(aes(colour = Value),size=1) + 
 scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
 labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Two Seeding Maps") + facet_wrap(~ Map)

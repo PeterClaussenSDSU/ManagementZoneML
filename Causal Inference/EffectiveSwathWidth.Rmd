@@ -1,0 +1,267 @@
+---
+title: "Determining Effect Swath Widths"
+author: "Peter Claussen"
+date: "2022-12-27"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggformula)
+library(GGally)
+library(ggdag)
+library(mgcv)
+library(bnlearn)
+library(splines)
+
+  grey <- "#999999"
+  orange <- "#E69F00"
+  skyblue <- "#56B4E9"
+  bluishgreen <- "#009E73"
+  yellow <- "#F0E442"
+  blue <- "#0072B2"
+  vermillion <- "#D55E00"
+  
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+# Introduction
+In precision agriculture, variable rate seeding is used to both maximize yield in high-yielding regions of a field (management zone) and to reduce the cost of inputs (i.e. the number of seed planted) in low yielding regions of the field. However, there has not been much work on determining the effectiveness variable seeding rate prescriptions.
+
+Yield monitor data and seeding rate application data are commonly reported as point estimates - this implies that yield or seeding rate is estimated for a single point in space. It is also common practice to determine management zones from prior years yield monitor data. However, because of the nature of recording yield data - samples are take at one second intervals as the harvester moves through the field - combining multiple maps is problematic, if we wish to examine yield components at a precise level (as implied by the name 'precision ag').
+
+For this problem, we assume a seeding map is a fixed geographical entity, and we wish to superimpose various yield maps onto the seeding map. One simple method is to simply interpolate between measured yield points to estimate the yield associated with a corresponding yield map. However, this approach represents some inherent accuracy - each seeding point may cover a large enough area (in our data, this is generally two yield passes per seeding pass) that the yield estimate for a seeding point may not accurately represent the yield over the entire area represented by a seeding point (see `Maps.Rmd` for illustration).
+
+So, instead, we propose a) determining the rectangle associated with each yield point b) finding yield points in the neighborhood of the seeding point and fitting a smoothing model - in our case, `gam` to the yield data c) integrating over the rectangle 'swept' by the seeder at each seeding point.
+
+To do this, we first need to estimate the swath width - the width of the seeding or harvest equipment. The GPS data associated with yield or seeding data frequently include direction and distance traveled; these can be used to determine one dimension of the rectangles swept by the farmers equipment. Swath width, however, is not generally recorded. We could directly measure the width of the equipment, but, instead, we choose to examine the seeding and yield monitor data to find an average or 'effective' swath width. That is, we determine on dimension of the rectangles associated with GPS data directly from the data itself.
+
+# Materials and Methods
+
+We have at our disposal several years of planting and harvest data from multiple fields. We've given the fields arbitrary designations using letters of the alphabet; the field we will focus on in this document will be field 'A'. 
+
+Prior to 2018, field were planted at a constant rate, so we have no interest in determining seeding swath width or harvest swath width for these earlier fields. 
+
+## Field A
+
+The data were downloaded as GPS shapefiles, and exported to CSV files. During CSV export, the `Latitude` and `Longitude` features were converted to metric distances and normalized for groups of fields to a common origin (thus, fields A, B and C have a shared origin at a point corresponding to the farther south and west for this group of fields.)
+
+```{r}
+#read field A harvest and seeding files
+harvest.2018.dat <- read.csv(file='../data/A 2018 Corn Harvest.csv')
+seed.2018.dat <- read.csv(file='../data/A 2018 Corn Seeding.csv')
+harvest.2019.dat <- read.csv(file='../data/A 2019 Soybean Harvest.csv')
+seed.2020.dat <- read.csv(file='../data/A 2020 Corn Seeding.csv')
+harvest.2020.dat <-read.csv(file='../data/A 2020 Corn Harvest.csv')
+```
+
+We start with determining the effective harvest width for 2018. We wish to select a region in the middle of the that contains only north-south passes, and has no overlap with the endrows. We also wish the region to be as large as possible to give us a larger sample of harvest passes. We label grid points as `Analyzed` to denote those we with to used for estimating swath width, and provid a plot to show the location of those cells.
+
+
+```{r}
+harvest.2018.dat$Analyzed <- TRUE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Easting < 255] <- FALSE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Easting > 975] <- FALSE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Northing > 500] <- FALSE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Northing < 400] <- FALSE
+ggplot(harvest.2018.dat, aes(Easting, Northing,color=Analyzed)) + 
+  geom_point(size=0.8) +
+  scale_colour_manual(values=cbPalette)
+```
+
+We performa a similar subsetting operation on seeding rate data for 2020.
+
+```{r}
+seed.2020.dat$Analyzed <- TRUE
+seed.2020.dat$Analyzed[seed.2020.dat$Easting < 255] <- FALSE
+seed.2020.dat$Analyzed[seed.2020.dat$Easting > 975] <- FALSE
+seed.2020.dat$Analyzed[seed.2020.dat$Northing > 500] <- FALSE
+seed.2020.dat$Analyzed[seed.2020.dat$Northing < 400] <- FALSE
+ggplot(seed.2020.dat, aes(Easting, Northing,color=Analyzed)) + 
+  geom_point(size=0.8) +
+  scale_colour_manual(values=cbPalette) 
+```
+
+It appears we can write a function to subset other fields - that is, harvest data from 2019 and 2020, plus seeding data from 2018. This function returns only the analyzable data rows, instead of marking the rows. It is the subset of the entire data that we will use for further analysis.
+
+```{r}
+subset.field.fn <- function(dat) {
+  dat <- dat[dat$Easting > 255,]
+  dat <- dat[dat$Easting < 975,]
+  dat <- dat[dat$Northing < 500,]
+  dat <- dat[dat$Northing > 400,]
+  return(dat)
+}
+
+harvest.2018.dat <- subset.field.fn(harvest.2018.dat)
+harvest.2019.dat <- subset.field.fn(harvest.2019.dat)
+harvest.2020.dat <- subset.field.fn(harvest.2020.dat)
+seed.2018.dat <- subset.field.fn(seed.2018.dat)
+seed.2020.dat <- subset.field.fn(seed.2020.dat)
+```
+
+### Determining grid size.
+We can determine the effective width by averaging over the distance between planter swaths. Using seeding for 2018, planter swaths were determined by first numbering swaths by finding gaps in `IsoTime` and incrementing swath number if gaps in samples were greater than 10 seconds (this assumes the field was planted entirely one the same day.) We do this, because we remove a large number of sampling points in our subsetting as described in the previous step.
+
+This function adds a `Swath` variable to the data, iterates over each row and converts `IsoTime` added by the implement to a numeric `Seconds` value, then increments `Swath` if there is a sufficiently large time gap between successive data rows.
+
+```{r,echo=FALSE}
+find.swaths <- function(dat,gap=10) {
+  dat$Seconds <- as.numeric(as.POSIXct(dat$IsoTime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"))
+  dat$Seconds <- dat$Seconds - min(dat$Seconds)
+  Swath = 1
+  dat$Swath <- Swath
+  
+  for(i in 2:dim(dat)[1]) {
+    if(dat$Seconds[i] - dat$Seconds[i-1] > gap ) {
+      Swath = Swath + 1
+    }
+    dat$Swath[i] <- Swath
+  }
+  return(dat)
+}
+```
+
+## Seeding Swath Widths
+
+We now apply this function to seeding data for 2018 and plot the results.
+
+```{r}
+seed.2018.dat <- find.swaths(seed.2018.dat)
+seed.2018.dat$Swath <- as.factor(seed.2018.dat$Swath)
+ggplot(seed.2018.dat, aes(Easting, Northing)) + 
+  geom_point(size=0.8) +
+  scale_discrete_manual(aes(color=Swath))
+```
+
+It looks like our function is reasonable. So, now we compute. First, we aggregate `Easting` by `Swath`. There is a slight angle to the passes - the are not aligned exactly with true north - but since we have approximately the same number of observations for each swatch, and a sufficiently large number of observations, we can use the mean without much concern about accuracy.
+
+
+```{r}
+swath.mean <- aggregate(Easting ~ Swath, seed.2018.dat, mean,na.rm=TRUE)
+swath.length <- aggregate(Easting ~ Swath, seed.2018.dat, length)
+print(swath.mean$Easting <- sort(swath.mean$Easting))
+```
+
+This gives us a value of the relative position of each swath. We when take the distance between each swath, and compute a mean.
+
+```{r}
+print(mean.swaths <- abs(swath.mean$Easting[2:length(swath.mean$Easting)] - swath.mean$Easting[1:(length(swath.mean$Easting)-1)]))
+print(mean.swath <- mean(mean.swaths))
+```
+
+Just for a relative estimate (distance covered versus width), we convert the `DISTANCE` field to a metric unit and compute a mean.
+
+```{r}
+distance.mean <- aggregate(DISTANCE*0.3048 ~ Swath, seed.2018.dat, mean)
+print(mean.distance <- mean(distance.mean$DISTANCE))
+```
+
+So, for each seeding rate data point, we have an associated rectangle of 25.24 x 2.367 meters.
+
+## Corn Harvest Swath Width
+
+We now perform the same calculations for the harvest data from 2018.
+
+```{r}
+harvest.2018.dat <- harvest.2018.dat[harvest.2018.dat$Analyzed,]
+harvest.2018.dat <- find.swaths(harvest.2018.dat)
+harvest.2018.dat$Swath <- as.factor(harvest.2018.dat$Swath)
+ggplot(harvest.2018.dat, aes(Easting, Northing)) + 
+  geom_point(size=0.8) +
+  scale_discrete_manual(aes(color=Swath))
+```
+
+```{r}
+harvest.2018.dat <- find.swaths(harvest.2018.dat,gap=10)
+swath.mean <- aggregate(Easting ~ Swath, harvest.2018.dat, mean,na.rm=TRUE)
+swath.length <- aggregate(Easting ~ Swath, harvest.2018.dat, length)
+
+swath.mean$Easting <- sort(swath.mean$Easting)
+
+mean.swaths <- abs(swath.mean$Easting[2:length(swath.mean$Easting)] - swath.mean$Easting[1:(length(swath.mean$Easting)-1)])
+print(mean.swath <- mean(mean.swaths))
+
+distance.mean <- aggregate(DISTANCE*0.3048 ~ Swath, harvest.2018.dat, mean)
+
+print(mean.distance <- mean(distance.mean$DISTANCE))
+```
+
+For harvest, we get rectangles of 12.61 x 1.79 meters. This seems reasonable - this implies two harvest passes per seeding pass. We note this is corn data, and plants are harvested in rows, so the size of the seeding swath width should be an integer multiple of the size of the harvest swath width.
+
+# Field H
+
+We now consider another field. While field A was planted in a north-south direction, field H was planted in an east-west direction. This will be a good test of our method,.
+
+```{r,fig.width=8, fig.height=4}
+seeding2017H.dat <- read.csv('../data/H 2017 Corn Seeding.csv')
+seeding2017H.dat$Analyzed <- TRUE
+seeding2017H.dat$Analyzed[seeding2017H.dat$Easting > 2500] <- FALSE
+seeding2017H.dat$Analyzed[seeding2017H.dat$Easting < 2400] <- FALSE
+seeding2017H.dat$Analyzed[seeding2017H.dat$Northing > 140] <- FALSE
+seeding2017H.dat$Analyzed[seeding2017H.dat$Northing < 26] <- FALSE
+ggplot(seeding2017H.dat, aes(Easting, Northing,color=Analyzed)) + 
+  geom_point(size=0.8) +
+  scale_colour_manual(values=cbPalette)
+```
+
+```{r}
+seeding2017H.dat <- seeding2017H.dat[seeding2017H.dat$Analyzed,]
+seeding2017H.dat <- find.swaths(seeding2017H.dat)
+seeding2017H.dat$Swath <- as.factor(seeding2017H.dat$Swath)
+ggplot(seeding2017H.dat, aes(Easting, Northing)) + 
+  geom_point(size=0.8) +
+  scale_discrete_manual(aes(color=Swath))
+```
+
+```{r}
+swath.mean <- aggregate(Northing ~ Swath, seeding2017H.dat, mean,na.rm=TRUE)
+swath.length <- aggregate(Northing ~ Swath, seeding2017H.dat, length)
+swath.mean$Northing <- sort(swath.mean$Northing)
+mean.swaths <- abs(swath.mean$Northing[2:length(swath.mean$Northing)] - swath.mean$Northing[1:(length(swath.mean$Northing)-1)])
+print(mean.swath <- mean(mean.swaths))
+
+distance.mean <- aggregate(DISTANCE*0.3048 ~ Swath, seeding2017H.dat, mean)
+
+print(mean.distance <- mean(distance.mean$DISTANCE))
+```
+
+
+```{r,fig.width=8, fig.height=4}
+harvest2017H.dat <- read.csv('../data/H 2017 Corn Harvest.csv')
+harvest2017H.dat$Analyzed <- TRUE
+harvest2017H.dat$Analyzed[harvest2017H.dat$Easting > 2500] <- FALSE
+harvest2017H.dat$Analyzed[harvest2017H.dat$Easting < 2400] <- FALSE
+harvest2017H.dat$Analyzed[harvest2017H.dat$Northing > 140] <- FALSE
+harvest2017H.dat$Analyzed[harvest2017H.dat$Northing < 20] <- FALSE
+ggplot(harvest2017H.dat, aes(Easting, Northing,color=Analyzed)) + 
+  geom_point(size=0.8) +
+  scale_colour_manual(values=cbPalette)
+```
+
+```{r}
+harvest2017H.dat <- harvest2017H.dat[harvest2017H.dat$Analyzed,]
+harvest2017H.dat <- find.swaths(harvest2017H.dat)
+harvest2017H.dat$Swath <- as.factor(harvest2017H.dat$Swath)
+ggplot(harvest2017H.dat, aes(Easting, Northing)) + 
+  geom_point(size=0.8) +
+  scale_discrete_manual(aes(color=Swath))
+```
+
+```{r}
+swath.mean <- aggregate(Northing ~ Swath, harvest2017H.dat, mean,na.rm=TRUE)
+swath.mean$Northing <- sort(swath.mean$Northing)
+
+mean.swaths <- abs(swath.mean$Northing[2:length(swath.mean$Northing)] - swath.mean$Northing[1:(length(swath.mean$Northing)-1)])
+print(mean.swath <- mean(mean.swaths))
+
+distance.mean <- aggregate(DISTANCE*0.3048 ~ Swath, harvest2017H.dat, mean)
+
+print(mean.distance <- mean(distance.mean$DISTANCE))
+```
+
+It appears we can't assume the same swath width for all years. It appears that field H in 2017 was planted and harvested with different equipment than Field A in 2018. I think it's safe to assume that seeding maps for 2018 and 2020 should be similar, but if we wish to consider seeding maps for earlier years with may need to adjust our calculations.
+
