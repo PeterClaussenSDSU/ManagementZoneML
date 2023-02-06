@@ -1,0 +1,8 @@
+
+*.html
+.Rhistory
+CausalInference.key
+*.pdf
+*.log
+*.tex
+*.Rda
