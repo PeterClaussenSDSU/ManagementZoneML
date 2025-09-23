@@ -1,0 +1,358 @@
+---
+title: "Causal Inference Seeding Rates"
+author: "Peter Claussen"
+date: "2022-12-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(ggformula)
+library(GGally)
+library(ggdag)
+library(mgcv)
+library(bnlearn)
+library(splines)
+
+  grey <- "#999999"
+  orange <- "#E69F00"
+  skyblue <- "#56B4E9"
+  bluishgreen <- "#009E73"
+  yellow <- "#F0E442"
+  blue <- "#0072B2"
+  vermillion <- "#D55E00"
+  
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+
+remove.harvest.outliers.fn <- function(tbl,rng=3) {
+  tbl <- tbl[!is.na(tbl$Yield),]
+  yield.mean <- mean(tbl$Yield)
+  yield.sd <- sd(tbl$Yield)
+  tbl <- tbl[tbl$Yield<=yield.mean+rng*yield.sd,]
+  tbl<- tbl[tbl$Yield>=yield.mean+rng-yield.sd,]
+  return(tbl)
+}
+remove.seed.outliers.fn <- function(tbl) {
+  tbl <- tbl[tbl$AppliedRate<=32000,]
+  tbl<- tbl[tbl$AppliedRate>=20000,]
+  return(tbl)
+}
+```
+
+# Introduction
+
+# Materials and Methods
+
+The general method of processing yield and seeding rate data is as follows. The data were read from anonymized files; GPS coordinates were converted to meters north (`Northing`) and meters east (`Easting`) from a common GPS coordinat at the south west corner of each field. The yield data where recorded from a GPS equipped John Deere model ### combine, while seeding rates were recorded from a Case GPS enabled model ### planter. Harvest data was trimmed by removing outliers as defined points greater than 5 standard deviations from the mean. Seeding rate data was trimmed by removing `Applied Rate` fields outside the range $[20000, 32000]$ seeds per acre. Several fields are analyzed, the majority being managed in a soybean-corn-soybean rotation, while for some fields and years wheat as included in the rotation. There are also some missing years for some fields. See Table ## for an overview of the data sets included in this analysis.
+
+Prior to 2018, fields were seeded at a constant rate. In 2018, corn fields were seed at variable rate, with the rate determine as deviations from a baseline of 27000 seeds per acre up or down, based on the farmers prior experience with the field. That is, seeding rate was adjusted manually as the planter was moving through the field. In 2020, seeding rates were determine by seed rate prescriptions uploaded to th planter controller. Field designations `A`, `B`, etc. are arbitrary designations assigned to a collection of 12 fields; not all fields are included in this analysis.
+
+The fields are not uniformly rectangular, so for analysis the fields were trimmed to rectangular shapes; this also removed endrows and make grid cells (described below) more uniform.
+
+Field  | Year | Crop
+-------|------|---------
+A      | 2013 | Soybean
+A      | 2015 | Wheat
+A      | 2016 | Corn
+A      | 2017 | Soybean
+A      | 2018 | Corn
+A      | 2019 | Soybean
+A      | 2020 | Corn
+
+### Data Column Description
+
+The raw data include numerous columns. The table below lists the data columns used in this analysis.
+
+Data Column | Description
+------------|-------------------
+Easting     |
+Northing    |
+IsoTime     |
+Yield       |
+Distance    |
+
+#### Harvest Maps
+## Field A
+
+```{r, echo=FALSE, include = FALSE}
+#read field A harvest and seeding files
+harvest.2013.dat <- remove.harvest.outliers.fn(read.csv(file='../data/A 2013 Soybeans Harvest.csv'),5)
+harvest.2015.dat <- remove.harvest.outliers.fn(read.csv(file='../data/A 2015 Wheat Harvest.csv'),5)
+harvest.2018.dat <- remove.harvest.outliers.fn(read.csv(file='../data/A 2018 Corn Harvest.csv'),5)
+harvest.2016.dat <- remove.harvest.outliers.fn(read.csv(file='../data/A 2016 Corn Harvest.csv'),5)
+harvest.2017.dat <- remove.harvest.outliers.fn(read.csv(file='../data/A 2017 Soybeans Harvest.csv'),5)
+seed.2018.dat <- remove.seed.outliers.fn(read.csv(file='../data/A 2018 Corn Seeding.csv'))
+harvest.2019.dat <- remove.harvest.outliers.fn(read.csv(file='../data/A 2019 Soybeans Harvest.csv'),5)
+seed.2020.dat <- remove.seed.outliers.fn(read.csv(file='../data/A 2020 Corn Seeding.csv'))
+harvest.2020.dat <-remove.harvest.outliers.fn(read.csv(file='../data/A 2020 Corn Harvest.csv'),5)
+```
+
+```{r,echo=FALSE}
+harvest.2018.dat$Analyzed <- TRUE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Easting < 255] <- FALSE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Easting > 975] <- FALSE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Northing > 515] <- FALSE
+harvest.2018.dat$Analyzed[harvest.2018.dat$Northing < 90] <- FALSE
+ggplot(harvest.2018.dat, aes(Easting, Northing,color=Analyzed)) + 
+  geom_point(size=0.8) +
+  scale_colour_manual(values=cbPalette)
+```
+
+```{r,echo=FALSE}
+seed.2020.dat$Analyzed <- TRUE
+seed.2020.dat$Analyzed[seed.2020.dat$Easting < 255] <- FALSE
+seed.2020.dat$Analyzed[seed.2020.dat$Easting > 975] <- FALSE
+seed.2020.dat$Analyzed[seed.2020.dat$Northing > 515] <- FALSE
+seed.2020.dat$Analyzed[seed.2020.dat$Northing < 90] <- FALSE
+ggplot(seed.2020.dat, aes(Easting, Northing,color=Analyzed)) + 
+  geom_point(size=0.8) +
+  scale_colour_manual(values=cbPalette) 
+```
+
+```{r,include  = FALSE}
+subset.field.fn <- function(dat) {
+  dat <- dat[dat$Easting > 255,]
+  dat <- dat[dat$Easting < 975,]
+  dat <- dat[dat$Northing < 515,]
+  dat <- dat[dat$Northing > 90,]
+  return(dat)
+}
+
+harvest.2013.dat <- subset.field.fn(harvest.2013.dat)
+harvest.2015.dat <- subset.field.fn(harvest.2015.dat)
+harvest.2016.dat <- subset.field.fn(harvest.2016.dat)
+harvest.2017.dat <- subset.field.fn(harvest.2017.dat)
+harvest.2018.dat <- subset.field.fn(harvest.2018.dat)
+harvest.2019.dat <- subset.field.fn(harvest.2019.dat)
+harvest.2020.dat <- subset.field.fn(harvest.2020.dat)
+seed.2018.dat <- subset.field.fn(seed.2018.dat)
+seed.2020.dat <- subset.field.fn(seed.2020.dat)
+```
+
+### Determining grid size.
+We want uniform sampling, so we want grid cells to be multiples of seeder width. We can determine the effective width by averaging over the distance between planter swaths. Using seeding for 2018, planter swaths were determined by first numbering swaths by finding gaps in `IsoTime` and incrementing swath number if gaps in samples were greater than 10 seconds (this assumes the field was planted entirely one the same day. )
+
+```{r,echo=FALSE, include = FALSE}
+find.swaths <- function(dat) {
+  dat$Seconds <- as.numeric(as.POSIXct(dat$IsoTime, format = "%Y-%m-%dT%H:%M:%OSZ", tz = "UTC"))
+  dat$Seconds <- dat$Seconds - min(dat$Seconds)
+  Swath = 1
+  dat$Swath <- Swath
+  
+  for(i in 2:dim(dat)[1]) {
+    if(dat$Seconds[i] - dat$Seconds[i-1] > 10 ) {
+      Swath = Swath + 1
+    }
+    dat$Swath[i] <- Swath
+  }
+  return(dat)
+}
+seed.2018.dat <- find.swaths(seed.2018.dat)
+swath.mean <- aggregate(Easting ~ Swath, seed.2018.dat, mean,na.rm=TRUE)
+swath.sd <- aggregate(Easting ~ Swath, seed.2018.dat, sd,na.rm=TRUE)
+swath.length <- aggregate(Easting ~ Swath, seed.2018.dat, length)
+
+mean.swaths = abs(swath.mean$Easting[2:length(swath.mean$Easting)] - swath.mean$Easting[1:(length(swath.mean$Easting)-1)])
+mean.swath = mean(mean.swaths)
+sd.swath = sd(mean.swaths)
+
+distance.mean <- aggregate(DISTANCE ~ Swath, seed.2018.dat, mean)
+distance.sd <- aggregate(DISTANCE ~ Swath, seed.2018.dat, sd)
+distance.length <- aggregate(DISTANCE ~ Swath, seed.2018.dat, length)
+
+mean.distance = mean(distance.mean$DISTANCE)
+sd.distance = sd(distance.mean$DISTANCE)
+```
+
+Mean swath width was 25.22 meters, while mean swath length as 7.67 m. This suggests a possible grid size of 50 m by 23 meters.
+
+```{r,echo=FALSE}
+grid.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
+  harvest.dat$Row <- ceiling(harvest.dat$Northing/grid.width[1])
+  harvest.dat$Column <- ceiling(harvest.dat$Easting/grid.width[2])
+  return(harvest.dat)
+}
+aggregate.field <- function(harvest.dat,response='Yield',grid.width=c(50,50),FUN=mean) {
+  harvest.dat$Row <- ceiling(harvest.dat$Northing/grid.width[1])
+  harvest.dat$Column <- ceiling(harvest.dat$Easting/grid.width[2])
+  fmla <- as.formula(paste(response,'~ Row + Column'))
+  tmp <- aggregate(fmla,data=harvest.dat,FUN=FUN,na.rm=TRUE)
+  count <- aggregate(fmla,data=harvest.dat,FUN=length)
+  row.names(tmp) <- paste(tmp$Row,tmp$Column,sep=":")
+  tmp$Samples <- count[,3]
+  return(tmp)
+}
+```
+
+
+```{r}
+#grid.size = c(25.22*2,7.67*3)
+grid.size = c(50,50)
+GridCells <- aggregate.field(seed.2018.dat,grid.size,response='ControlRate')
+#GridCells <- GridCells[GridCells$Samples>30,]
+#rename rate for simplicity
+names(GridCells)[3] <- 'R18'
+#and provide a relative rank
+GridCells$RR <- GridCells$R18/max(GridCells$R18)
+
+#Merge on row names, which will map to grid cell identifiers (row and column)
+grid.2018.dat <- aggregate.field(harvest.2018.dat,grid.size,response='Yield')
+GridCells$Y18 <- grid.2018.dat[row.names(GridCells),'Yield']
+
+cells.2017.dat <- aggregate.field(harvest.2017.dat,grid.size,response='Yield')
+GridCells$Y17 <- cells.2017.dat[row.names(GridCells),'Yield']
+
+GridCells$Q18 <- floor(rank(GridCells$Y18)/max(rank(GridCells$Y18))/5)
+GridCells$Q18[GridCells$Q18>5] = 5
+GridCells$Q18 <- factor(GridCells$Q18*20)
+
+tmp <- aggregate.field(seed.2020.dat,grid.size,response='ControlRate')
+GridCells$R20 <- tmp[row.names(GridCells),'ControlRate']
+
+tmp <- aggregate.field(seed.2018.dat,grid.size,response='AppliedRate')
+GridCells$AR18 <- tmp[row.names(GridCells),'AppliedRate']
+
+tmp <- aggregate.field(harvest.2013.dat,grid.size,response='Yield')
+GridCells$Y13 <- tmp[row.names(GridCells),'Yield']
+tmp <- aggregate.field(harvest.2015.dat,grid.size,response='Yield')
+GridCells$Y15 <- tmp[row.names(GridCells),'Yield']
+tmp <- aggregate.field(harvest.2016.dat,grid.size,response='Yield')
+GridCells$Y16 <- tmp[row.names(GridCells),'Yield']
+tmp <- aggregate.field(harvest.2019.dat,grid.size,response='Yield')
+GridCells$Y19 <- tmp[row.names(GridCells),'Yield']
+tmp <- aggregate.field(harvest.2020.dat,grid.size,response='Yield')
+GridCells$Y20 <- tmp[row.names(GridCells),'Yield']
+```
+
+Add relative ranks and plot.
+
+```{r,fig.width=10,fig.height=4}
+GridCells$Y18r <- rank(GridCells$Y18)/max(rank(GridCells$Y18))
+GridCells$Y17r <- rank(GridCells$Y17)/max(rank(GridCells$Y17))
+GridCells$R18r <- rank(GridCells$R18)/max(rank(GridCells$R18))
+
+GridMaps <- data.frame(Row=c(GridCells$Row,GridCells$Row,GridCells$Row),
+                   Column=c(GridCells$Column, GridCells$Column, GridCells$Column),
+                   Value=c(GridCells$Y18r,GridCells$Y17r,GridCells$R18r),
+                   Map=c(rep('Y18',length(GridCells$Y18r)),
+                         rep('Y17',length(GridCells$Y17r)),
+                         rep('R18',length(GridCells$R18r))))
+ggplot(GridMaps, aes(Column,Row)) + 
+geom_point(aes(colour = Value),size=3) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting Cell No", y="Northing Cell No", title = "Grid Data") + facet_wrap(~ Map)
+```
+
+```{r,fig.width=8,fig.height=4.5}
+ggpairs(GridCells[,c('Y20','Y19','Y18','Y17','Y16','Y15','Y13','R20','R18')], aes(alpha = 0.4))
+```
+
+```{r}
+model1.dat <- GridCells[,c('Y18','R18','Y17')]
+model1.dat <- model1.dat[complete.cases(model1.dat), ]
+boot.strength(model1.dat,algorithm='pc.stable')
+boot.strength(model1.dat, algorithm = "hc")
+boot.strength(model1.dat, algorithm = "gs")
+
+model1.dag <- model2network("[Y17][R18][Y18|R18:Y17]")
+model2.dag <- model2network("[Y17][R18|Y17][Y18|R18]")
+model3.dag <- model2network("[Y17][R18|Y17][Y18|R18:Y17]")
+par(mfrow=c(1,3))
+graphviz.plot(model1.dag)
+graphviz.plot(model2.dag)
+graphviz.plot(model3.dag)
+
+#model1.dag
+fit1 = bn.fit(model1.dag, model1.dat)
+
+strength1 <- arc.strength(model1.dag, model1.dat)
+strength1
+strength.plot(model1.dag, strength1)
+#model2.dag
+
+fit2 = bn.fit(model2.dag, model1.dat)
+fit2
+
+strength2 <- arc.strength(model2.dag, model1.dat)
+strength2
+strength.plot(model2.dag, strength2)
+
+fit3 = bn.fit(model3.dag, model1.dat)
+fit3
+
+strength3 <- arc.strength(model3.dag, model1.dat)
+
+arc.strength(model3.dag, model1.dat)
+arc.strength(model3.dag, model1.dat, criterion = 'aic-g')
+arc.strength(model3.dag, model1.dat, criterion = 'bic-g')
+arc.strength(model3.dag, model1.dat, criterion = 'loglik-g')
+
+
+strength3
+strength.plot(model3.dag, strength3)
+
+bn.cv(model1.dat, model1.dag, algorithm.args = list(score = "aic"))
+bn.cv(model1.dat, model2.dag, algorithm.args = list(score = "aic"))
+bn.cv(model1.dat, model3.dag, algorithm.args = list(score = "aic"))
+
+bf.strength1 <- bf.strength(model1.dag, model1.dat)
+bf.strength2 <- bf.strength(model2.dag, model1.dat)
+bf.strength3 <- bf.strength(model3.dag, model1.dat)
+
+strength.plot(model1.dag, bf.strength1)
+strength.plot(model2.dag, bf.strength2)
+strength.plot(model3.dag, bf.strength3)
+
+averaged.network(bf.strength1)
+averaged.network(bf.strength2)
+averaged.network(bf.strength3)
+
+bf.strength1
+bf.strength2 
+bf.strength3
+
+score(model1.dag,model1.dat,type = 'aic-g')
+score(model2.dag,model1.dat,type = 'aic-g')
+score(model3.dag,model1.dat,type = 'aic-g')
+
+score(model1.dag,model1.dat,type = 'bic-g')
+score(model2.dag,model1.dat,type = 'bic-g')
+score(model3.dag,model1.dat,type = 'bic-g')
+
+score(model1.dag,model1.dat,type = 'loglik-g')
+score(model2.dag,model1.dat,type = 'loglik-g')
+score(model3.dag,model1.dat,type = 'loglik-g')
+
+score(model1.dag,model1.dat,type = 'bge')
+score(model2.dag,model1.dat,type = 'bge')
+score(model3.dag,model1.dat,type = 'bge')
+```
+
+
+```{r}
+learned.dag = iamb(model1.dat)
+graphviz.plot(learned.dag)
+graphviz.plot(pc.stable(model1.dat))
+```
+
+
+```{r}
+model9.dat <- GridCells[,c('Y20','R20','Y19','Y18',"R18",'AR18',"Y17",'Y16','Y15')]
+model9.dat <- model9.dat[complete.cases(model9.dat),]
+model9.dag <- model2network("[Y15][Y16|Y15][Y17|Y16:Y15][R18|Y17:Y16:Y15][AR18|R18][Y18|AR18:Y17:Y16:Y15][Y19|Y18:Y17:Y16:Y15][R20|Y19:Y18:Y17:Y16:Y15][Y20|R20:Y19:Y18:Y17:Y16:Y15]")
+
+
+model9.fit = bn.fit(model9.dag, model9.dat)
+model9.fit
+bn.fit.qqplot(model9.fit)
+strength9 <- arc.strength(model9.dag, model9.dat)
+strength9
+strength.plot(model9.dag, strength9)
+
+bf.strength9 <- bf.strength(model9.dag, model9.dat)
+bf.strength9
+strength.plot(model9.dag, bf.strength9)
+averaged.network(bf.strength9)
+plot(bf.strength9)
+```

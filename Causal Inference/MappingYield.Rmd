@@ -880,3 +880,123 @@ XIntegral.plot = XIntegral.plot+geom_point(data=res$Estimates,aes(colour = Estim
 XIntegral.plot = XIntegral.plot+geom_point(data=tmp,aes(colour = Estimate),size = 2)
 XIntegral.plot
 ```
+
+# Uses
+
+What do we do with yield data mapped to seeding grids? Let's try this with every data point in the original trial
+
+```{r}
+rows <- dim(seeding2018.dat)[1]
+seeding2018.dat$Yield <- NA
+
+for(i in 1:rows) {
+  pointX.dat <- seeding2018.dat[i,]
+  neighborhoodX.dat <- find.neighborhood(pointX.dat, harvest2018.dat, SwathWidth)
+  surfaceX.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodX.dat)
+  pointX.dat <- add.corners(pointX.dat)$Row
+  #XIntegral.plot <- create.areal.plot(pointX.dat, Multiplier = 2)
+  
+  res = numerical.integration.yield(pointX.dat,surfaceX.gam)
+  seeding2018.dat$Yield[i] <- res$Estimate
+}
+```
+
+Now, plot the estimated yields against applied rate.
+```{r}
+ggplot(seeding2018.dat, aes(AppliedRate, Yield)) + 
+           geom_point(size=.2) + geom_smooth()
+```
+It appears that the higher seeding rates did not result in higher yield, yield seesm to plateau at the most common seeding rate, and about 27500 seeds/acre.
+
+
+```{r}
+library(mgcv)
+linear.lm <- lm(Yield ~ AppliedRate, data=seeding2018.dat)
+quadratic.lm <- lm(Yield ~ poly(AppliedRate,2), data=seeding2018.dat)
+cubic.lm <- lm(Yield ~ poly(AppliedRate,3), data=seeding2018.dat)
+quartic.lm <- lm(Yield ~ poly(AppliedRate,4), data=seeding2018.dat)
+quintic.lm <- lm(Yield ~ poly(AppliedRate,5), data=seeding2018.dat)
+six.lm <- lm(Yield ~ poly(AppliedRate,6), data=seeding2018.dat)
+seven.lm <- lm(Yield ~ poly(AppliedRate,7), data=seeding2018.dat)
+aov.lm <- lm(Yield ~ as.factor(AppliedRate), data=seeding2018.dat)
+aov.gam <- gam(Yield ~ s(AppliedRate), data=seeding2018.dat)
+anova(linear.lm)
+anova(quadratic.lm)
+anova(cubic.lm)
+anova(quartic.lm)
+anova(quintic.lm)
+anova(six.lm)
+anova(seven.lm)
+anova(aov.lm)
+anova(aov.gam)
+summary(aov.gam)
+AIC(linear.lm,quadratic.lm,cubic.lm,quartic.lm,quintic.lm,six.lm,seven.lm)
+BIC(linear.lm,quadratic.lm,cubic.lm,quartic.lm,quintic.lm,six.lm,seven.lm)
+```
+
+```{r}
+seeding2018.dat$Linear <- predict(linear.lm)
+seeding2018.dat$Predicted <- predict(aov.gam)
+ggplot(seeding2018.dat, aes(AppliedRate, Yield)) + 
+           geom_point(size=.2) + geom_line(aes(AppliedRate,Predicted),color=blue) + geom_line(aes(AppliedRate,Linear),color=skyblue)
+```
+
+If yield was a linear response to seeding rate, then we expect to see a best fitting regression as illustrated by the light blue line. But it does not appear linear, or, at least, the linear model is considerably more biased than the higher order polynomials. Lack of linearity suggests that for this field, seed rate prescriptions did not improve yield at the higher seeding rates.
+
+
+# Field B
+
+```{r}
+seeding.dat <- read.csv('../data/A 2020 Corn Seeding.csv')
+harvest.dat <- read.csv('../data/A 2020 Corn Harvest.csv')
+seeding.dat <- remove.seed.outliers.fn(seeding.dat)
+harvest.dat <- remove.harvest.outliers.fn(harvest.dat)
+
+seeding.dat$SwathWidth = SwathWidth
+seeding.dat$Distance <- seeding.dat$DISTANCE*0.3048
+```
+
+```{r}
+rows <- dim(seeding.dat)[1]
+seeding.dat$Yield <- NA
+
+for(i in 1:rows) {
+  pointX.dat <- seeding.dat[i,]
+  neighborhoodX.dat <- find.neighborhood(pointX.dat, harvest.dat, SwathWidth)
+  surfaceX.gam <- gam(Yield ~ s(Easting,Northing), data=neighborhoodX.dat)
+  pointX.dat <- add.corners(pointX.dat)$Row
+  res = numerical.integration.yield(pointX.dat,surfaceX.gam)
+  seeding.dat$Yield[i] <- res$Estimate
+}
+```
+
+```{r}
+linear.lm <- lm(Yield ~ AppliedRate, data=seeding.dat)
+quadratic.lm <- lm(Yield ~ poly(AppliedRate,2), data=seeding.dat)
+cubic.lm <- lm(Yield ~ poly(AppliedRate,3), data=seeding.dat)
+quartic.lm <- lm(Yield ~ poly(AppliedRate,4), data=seeding.dat)
+quintic.lm <- lm(Yield ~ poly(AppliedRate,5), data=seeding.dat)
+six.lm <- lm(Yield ~ poly(AppliedRate,6), data=seeding.dat)
+seven.lm <- lm(Yield ~ poly(AppliedRate,7), data=seeding.dat)
+aov.lm <- lm(Yield ~ as.factor(AppliedRate), data=seeding.dat)
+aov.gam <- gam(Yield ~ s(AppliedRate), data=seeding.dat)
+anova(linear.lm)
+anova(quadratic.lm)
+anova(cubic.lm)
+anova(quartic.lm)
+anova(quintic.lm)
+anova(six.lm)
+anova(seven.lm)
+anova(aov.lm)
+anova(aov.gam)
+summary(aov.gam)
+AIC(linear.lm,quadratic.lm,cubic.lm,quartic.lm,quintic.lm,six.lm,seven.lm)
+BIC(linear.lm,quadratic.lm,cubic.lm,quartic.lm,quintic.lm,six.lm,seven.lm)
+```
+
+```{r}
+seeding.dat$Linear <- predict(linear.lm)
+seeding.dat$Predicted <- predict(aov.gam)
+ggplot(seeding.dat, aes(AppliedRate, Yield)) + 
+           geom_point(size=.2) + geom_line(aes(AppliedRate,Predicted),color=blue) + geom_line(aes(AppliedRate,Linear),color=skyblue)
+```

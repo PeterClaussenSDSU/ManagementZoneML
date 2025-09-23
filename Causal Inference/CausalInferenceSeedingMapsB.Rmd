@@ -1,0 +1,610 @@
+---
+title: 'Causal Inference : Seeding Grid'
+author: "Peter Claussen"
+date: "2023-01-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(gridExtra)
+library(brms)
+library(bnlearn)
+
+grey <- "#999999"
+orange <- "#E69F00"
+skyblue <- "#56B4E9"
+bluishgreen <- "#009E73"
+yellow <- "#F0E442"
+blue <- "#0072B2"
+vermillion <- "#D55E00"
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#0072B2", "#D55E00", "#F0E442","#CC79A7","#000000","#734f80", "#2b5a74", "#004f39", "#787221", "#003959", "#6aaf00", "#663cd3")
+```
+
+# Introduction
+
+We have several sets of data pertaining to corn seeding rate and the resulting grain yield, both in the form of GPS maps generated from precision-enabled equipment. We wish to determine the relationship between seeding rate and yield, relative to the yield that might be expected given uniform seeding. To do this, we could naively map point estimates of yield to the PGS coordinates associated with corn seeding, each seeding point tagged with a GPS coordinate and two relevant variables - `Control Rate` and `Applied Rate`. In each case, yield and seeding, estimates are taken a one second intervals on GPS precision ag enabled equipment as the seeder tractor or combine travels through a cropland.
+
+However, we recognize that each point represents a rectangle - the rectangle that is 'swept' in the interval. So, instead of using point estimates for yield, we estimate yield over an area represented by each seeding sample. Our general algorithm is first, for each seeding data point, estimate the area seeded using trigonometric relationships between the seeding variables `Heading`, which represents the direction the seeder is traveling, and `Distance`, which represents the distance traveled since the last measurement point (thus, determines the height or length of the seeded rectangle. 
+
+We include the variable `SwathWidth`, which represents the effective width of the seeding implement, thus the width of the seeded rectangle. More details of estimating `SwathWidth` is documented in `EffectiveSwathWidth`. The variables `Heading`, `Distance` and `Swathwidth` are used to find the corners of the seeded rectangle in a Cartesian coordinate system common to multiple seeding and yield maps, mapped by metric distance from a common origin, by the variables `Easting` and `Northing`.
+
+Yield data are determined for each rectangle by first find a neighborhood of the original seeding data point; this will typically be twice the `SwathWidth` in each coordinate direction. The yield points are then fit to basis splines using a generalized additive model from the `mgcv` package in R. We then use Monte Carlo integration to provide an estimate of yield for the rectangle. This process is documented in more detail in `MappingYield`.
+
+In this document, we consider two years (2018 and 2020) of variable rate seeding in corn for several fields from a farm in eastern South Dakota. We include both the the seeding rate and harvest yield for a single growing season along with prior years harvest, mapped to a common seeding rate map. We then compare the relationship between seeding rate and grain yield to the grain yield for, say 2017 (and prior years) to the yield for 2018, and ask the question - which variable seems to have the strongest correlation with yields for 2018 and 2020? We also ask the question - can we determine the effectiveness of variable seeding rate using Bayesian networks?
+
+# Materials and Methods
+
+## Mapping Yield (Corn) from 2018 to Seeding rate for 2018.
+
+Read data and remove outliers
+
+```{r,echo=FALSE}
+source('../../YieldDataModels/R/remove.harvest.outliers.fn.R')
+source('../../YieldDataModels/R/remove.seed.outliers.fn.R')
+```
+```{r}
+source('../R/find.corners.R')
+source('../R/add.corners.R')
+source('../R/find.neighborhood.R')
+source('../R/point.in.rectangle.R')
+source('../R/numerical.integration.yield.R')
+
+harvest2013.dat <- read.csv(file='../data/B 2013 Soybean Harvest.csv')
+harvest2014.dat <- read.csv(file='../data/B 2014 Corn Harvest.csv')
+harvest2015.dat <- read.csv(file='../data/B 2015 Soybean Harvest.csv')
+harvest2016.dat <- read.csv(file='../data/B 2016 Corn Harvest.csv')
+harvest2017.dat <- read.csv(file='../data/B 2017 Soybean Harvest.csv')
+harvest2018.dat <- read.csv(file='../data/B 2018 Corn Harvest.csv')
+seeding2018.dat <-read.csv(file='../data/B 2018 Corn Seeding.csv')
+harvest2019.dat <- read.csv(file='../data/B 2019 Soybean Harvest.csv')
+seeding2020.dat <-read.csv(file='../data/B 2020 Corn Seeding.csv')
+harvest2020.dat <- read.csv(file='../data/B 2020 Corn Harvest.csv')
+
+harvest2013.dat <- remove.harvest.outliers.fn(harvest2013.dat,rng=5)
+harvest2014.dat <- remove.harvest.outliers.fn(harvest2014.dat,rng=5)
+harvest2015.dat <- remove.harvest.outliers.fn(harvest2015.dat,rng=5)
+harvest2016.dat <- remove.harvest.outliers.fn(harvest2016.dat,rng=5)
+harvest2017.dat <- remove.harvest.outliers.fn(harvest2017.dat,rng=5)
+harvest2018.dat <- remove.harvest.outliers.fn(harvest2018.dat,rng=5)
+seeding2018.dat <- remove.seed.outliers.fn(seeding2018.dat)
+
+seeding2020.dat <- remove.seed.outliers.fn(seeding2020.dat)
+harvest2020.dat <- remove.harvest.outliers.fn(harvest2020.dat,rng=5)
+harvest2019.dat <- remove.harvest.outliers.fn(harvest2019.dat,rng=5)
+
+dim(seeding2018.dat)
+```
+
+We have previously estimated swath width, and convert `DISTANCE` to a metric value.
+```{r}
+SwathWidth = 25.24
+seeding2018.dat$SwathWidth = SwathWidth
+seeding2018.dat$Distance <- seeding2018.dat$DISTANCE*0.3048
+```
+
+```{r}
+SwathWidth = 25.24
+seeding2020.dat$SwathWidth = SwathWidth
+seeding2020.dat$Distance <- seeding2020.dat$DISTANCE*0.3048
+```
+
+We use `gam` to fit a trend surface to estimate yields from different yield maps; see `MappingYield.Rmd`. Since this involves numeric integration and can be somewhat time consuming, we put save results to an `Rda` file and compute estimates only if not already available.
+
+Sometimes the neighborhoods are too small for `gam` fits, so I've written a function to wrap the numerical integration in a try-catch block and return null if the area can't be estimated.
+
+```{r}
+source('../R/areal.yield.estimate.R')
+```
+
+
+```{r,echo=FALSE}
+library(mgcv)
+if(!file.exists("seeding2018B.Rda")) {
+  seeding2018.dat$Y18 <- NA
+  seeding2018.dat$Y17 <- NA
+  seeding2018.dat$Y16 <- NA
+  seeding2018.dat$Y15 <- NA
+  seeding2018.dat$Y14 <- NA
+  seeding2018.dat$Y13 <- NA
+  rows <- dim(seeding2018.dat)[1]
+  for(row in 1:rows) {
+    current <- seeding2018.dat[row,]
+    current <- add.corners(current)
+    seeding2018.dat$Y18[row] <- areal.yield.estimate(current, harvest2018.dat, SwathWidth)
+    seeding2018.dat$Y17[row] <- areal.yield.estimate(current, harvest2017.dat, SwathWidth)
+    seeding2018.dat$Y16[row] <- areal.yield.estimate(current, harvest2016.dat, SwathWidth)
+    seeding2018.dat$Y15[row] <- areal.yield.estimate(current, harvest2015.dat, SwathWidth)
+    seeding2018.dat$Y14[row] <- areal.yield.estimate(current, harvest2014.dat, SwathWidth)
+    seeding2018.dat$Y13[row] <- areal.yield.estimate(current, harvest2013.dat, SwathWidth)
+  } 
+
+  
+  save(seeding2018.dat, file="seeding2018B.Rda")
+} else {
+  load(file="seeding2018B.Rda")
+}
+```
+
+We will compare areal yield estimates with point estimates obtained by fitting the entire field to a trend surface using `gam`, then estimating yield for each seeding GPS point. We use a method based on finding an optimal semivariogram to choose the degree of smoothing. See `ModelSelectionA.Rmd`.
+
+```{r}
+point.gam <- gam(Yield ~ s(Easting,Northing,k=180), data=harvest2018.dat)
+seeding2018.dat$PY18 <- predict(point.gam,newdata=seeding2018.dat)
+  
+point.gam <- gam(Yield ~ s(Easting,Northing,k=180), data=harvest2017.dat)
+seeding2018.dat$PY17 <- predict(point.gam,newdata=seeding2018.dat)
+
+seeding2018.dat$AR18 <- seeding2018.dat$AppliedRate
+```
+
+```{r,echo=FALSE}
+harvest2017.dat$YieldRank <- rank(harvest2017.dat$Yield)
+harvest2017.dat$YieldRank <- harvest2017.dat$YieldRank/max(harvest2017.dat$YieldRank)
+seeding2018.dat$Y17Rank <- rank(seeding2018.dat$Y17)
+seeding2018.dat$Y17Rank <- seeding2018.dat$Y17Rank/max(seeding2018.dat$Y17Rank)
+seeding2018.dat$Y18Rank <- rank(seeding2018.dat$Y18)
+seeding2018.dat$Y18Rank <- seeding2018.dat$Y18Rank/max(seeding2018.dat$Y18Rank)
+seeding2018.dat$RateRank <- rank(seeding2018.dat$AppliedRate)
+seeding2018.dat$RateRank <- seeding2018.dat$RateRank/max(seeding2018.dat$RateRank)
+```
+
+```{r}
+seeding2018.dat$PRank <- rank(seeding2018.dat$PY18)
+seeding2018.dat$PRank <- seeding2018.dat$PRank/max(seeding2018.dat$PRank)
+```
+
+
+# Seeding rates and associated yields for 2020
+
+```{r,echo=FALSE}
+if(!file.exists("seeding2020B.Rda")) {
+  seeding2020.dat$Y20 <- NA
+  seeding2020.dat$Y19 <- NA
+  seeding2020.dat$Y18 <- NA
+  seeding2020.dat$Y17 <- NA
+  seeding2020.dat$Y16 <- NA
+  seeding2020.dat$Y15 <- NA
+  seeding2020.dat$Y14 <- NA
+  seeding2020.dat$Y13 <- NA
+  rows <- dim(seeding2020.dat)[1]
+  for(row in 1:rows) {
+    current <- seeding2020.dat[row,]
+    current <- add.corners(current)
+
+    seeding2020.dat$Y20[row] <- areal.yield.estimate(current, harvest2020.dat, SwathWidth)
+    seeding2020.dat$Y19[row] <- areal.yield.estimate(current, harvest2019.dat, SwathWidth)
+    seeding2020.dat$Y18[row] <- areal.yield.estimate(current, harvest2018.dat, SwathWidth)
+    seeding2020.dat$Y17[row] <- areal.yield.estimate(current, harvest2017.dat, SwathWidth)
+    seeding2020.dat$Y16[row] <- areal.yield.estimate(current, harvest2016.dat, SwathWidth)
+    seeding2020.dat$Y15[row] <- areal.yield.estimate(current, harvest2015.dat, SwathWidth)
+    seeding2020.dat$Y14[row] <- areal.yield.estimate(current, harvest2014.dat, SwathWidth)
+    seeding2020.dat$Y13[row] <- areal.yield.estimate(current, harvest2013.dat, SwathWidth)
+  } 
+
+  save(seeding2020.dat, file="seeding2020B.Rda")
+} else {
+  load(file="seeding2020B.Rda")
+}
+
+#seeding2020.dat$AVG <- NA
+#seeding2020.dat$AVG[row] <- apply(seeding2020.dat[row, c("Y17","Y16","Y15","Y13")],1,mean)
+
+#for comparison, use point estimates for seeding GPS data, instead of integrating over area
+point.gam <- gam(Yield ~ s(Easting,Northing,k=180), data=harvest2019.dat)
+seeding2020.dat$PY19 <- predict(point.gam,newdata=seeding2020.dat)
+  
+point.gam <- gam(Yield ~ s(Easting,Northing,k=180), data=harvest2020.dat)
+seeding2020.dat$PY20 <- predict(point.gam,newdata=seeding2020.dat)
+
+seeding2020.dat$AR20 <- seeding2020.dat$AppliedRate
+```
+
+```{r,echo=FALSE}
+#convert yield values to ranks for plotting
+seeding2020.dat$Y17Rank <- rank(seeding2020.dat$Y17)
+seeding2020.dat$Y17Rank <- seeding2020.dat$Y17Rank/max(seeding2020.dat$Y17Rank)
+
+seeding2020.dat$Y18Rank <- rank(seeding2020.dat$Y18)
+seeding2020.dat$Y18Rank <- seeding2020.dat$Y18Rank/max(seeding2020.dat$Y18Rank)
+
+seeding2020.dat$Y19Rank <- rank(seeding2020.dat$Y19)
+seeding2020.dat$Y19Rank <- seeding2020.dat$Y19Rank/max(seeding2020.dat$Y19Rank)
+seeding2020.dat$Y20Rank <- rank(seeding2020.dat$Y20)
+seeding2020.dat$Y20Rank <- seeding2020.dat$Y20Rank/max(seeding2020.dat$Y20Rank)
+seeding2020.dat$RateRank <- rank(seeding2020.dat$AppliedRate)
+seeding2020.dat$RateRank <- seeding2020.dat$RateRank/max(seeding2020.dat$RateRank)
+
+harvest2019.dat$YieldRank <- rank(harvest2019.dat$Yield)
+harvest2019.dat$YieldRank <- harvest2019.dat$YieldRank/max(harvest2019.dat$YieldRank)
+seeding2020.dat$PY19Rank <- rank(seeding2020.dat$PY19)
+seeding2020.dat$PY19Rank <- seeding2020.dat$PY19Rank/max(seeding2020.dat$PY19Rank)
+```
+
+
+## Normalize Yield
+
+There is an hidden variable in these data - the inherent fertility of the field. This fertility can be due to variations in soil type and elevation, among other geographical features. We can't measure this field directly, we can only infer it's effects on yield. This field may also vary from year to year, and from crop to crop. We wish to include an estimate of this variable in our modeling, so we take the average of several years of yield data, using only those years when seeding and other crop inputs was uniform - in our case, we expect variable rate seeding to influence the interaction of field fertility with crop. 
+
+Since we have crops with yields on different scales, we normalize each year by calculating both mean and standard deviation of all yield estimates, then converting yield observations to a $z$-score, based on the formula $z_{i} = (y{i} - \bar y)\ \mu_y$. We then combine the averages of the $z$ scores in the variable `AVG`.
+
+
+
+```{r,eval=FALSE}
+normalize <- function(x) {
+  x <- x[!is.na(x)]
+  std <- sd(x)
+  return (x - mean(x))/std
+}
+yield.dat <- seeding2020.dat[, c("Y19","Y17","Y16","Y15","Y14","Y13")]
+means <- apply(yield.dat,2,normalize)
+plot(yield.dat$Y19,seeding2020.dat$Y19)
+seeding2020.dat$AVG <- apply(as.data.frame(means),1,mean,na.rm=TRUE)
+```
+
+```{r,fig.height=8,fig.width=8}
+par(mfrow=c(3,2))
+hist(seeding2020.dat$Y13)
+hist(seeding2020.dat$Y15)
+hist(seeding2020.dat$Y16)
+hist(seeding2020.dat$Y17)
+hist(seeding2020.dat$Y19)
+#hist(seeding2020.dat$AVG)
+```
+
+# Results
+
+## How do areal yield estimates compare with point yield estimates?
+
+```{r}
+pointyield18.gam <- gam(PY18 ~ s(AppliedRate), data=seeding2018.dat)
+estimatedyield18.gam <- gam(Y18 ~ s(AppliedRate), data=seeding2018.dat)
+summary(pointyield18.gam)
+summary(estimatedyield18.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,2))
+plot(pointyield18.gam)
+plot(estimatedyield18.gam)
+```
+
+```{r,fig.width=6,fig.height=6}
+Maps18 <- data.frame(Easting=c(harvest2017.dat$Easting, seeding2018.dat$Easting, seeding2018.dat$Easting, seeding2018.dat$Easting),
+                   Northing=c(harvest2017.dat$Northing, seeding2018.dat$Northing,seeding2018.dat$Northing,seeding2018.dat$Northing),
+                   Value=c(harvest2017.dat$YieldRank, seeding2018.dat$Y17Rank,seeding2018.dat$PRank,seeding2018.dat$RateRank),
+                   Map=c(rep('Yield 2017 (Raw Ranks)',length(harvest2017.dat$YieldRank)),
+                          rep('Yield 2017 (Seeding Grid)',length(seeding2018.dat$Y17Rank)),
+                         rep('Yield 2017 (Point Estimate)',length(seeding2018.dat$Y18Rank)),
+                         rep('Seeding 2018',length(seeding2018.dat$RateRank))))
+ggplot(Maps18, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield and Seeding Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+```{r}
+pointyield17.gam <- gam(AR18 ~ s(PY17), data=seeding2018.dat)
+estimatedyield17.gam <- gam(AR18 ~ s(Y17), data=seeding2018.dat)
+summary(pointyield17.gam)
+summary(estimatedyield17.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,2))
+plot(pointyield17.gam)
+plot(estimatedyield17.gam)
+```
+
+```{r,fig.width=6,fig.height=6}
+Maps20 <- data.frame(Easting=c(harvest2019.dat$Easting, seeding2020.dat$Easting,seeding2020.dat$Easting,seeding2020.dat$Easting),
+                   Northing=c(harvest2019.dat$Northing, seeding2020.dat$Northing,seeding2020.dat$Northing,seeding2020.dat$Northing),
+                   Value=c(harvest2019.dat$YieldRank, seeding2020.dat$Y19Rank,seeding2020.dat$PY19Rank,seeding2020.dat$RateRank),
+                   Map=c(rep('Yield 2019 (Raw)',length(harvest2019.dat$YieldRank)),
+                         rep('Yield 2019 (Seeding Grid)',length(seeding2020.dat$Y19Rank)),
+                         rep('Yield 2019 (Point Estimate)',length(seeding2020.dat$PY19Rank)),
+                         rep('Seeding 2020',length(seeding2020.dat$RateRank))))
+ggplot(Maps20, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield and Seeding Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+```{r}
+pointyield19.gam <- gam(AR20 ~ s(PY19), data=seeding2020.dat)
+estimatedyield19.gam <- gam(AR20 ~ s(Y19), data=seeding2020.dat)
+summary(pointyield19.gam)
+summary(estimatedyield19.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,2))
+plot(pointyield19.gam)
+plot(estimatedyield19.gam)
+```
+
+
+```{r}
+pointyield20.gam <- gam(PY20 ~ s(AppliedRate), data=seeding2020.dat)
+estimatedyield20.gam <- gam(Y20 ~ s(AppliedRate), data=seeding2020.dat)
+summary(pointyield20.gam)
+summary(estimatedyield20.gam)
+```
+
+```{r,fig.width=8,fig.height=4}
+par(mfrow=c(1,2))
+plot(pointyield20.gam)
+plot(estimatedyield20.gam)
+```
+
+# Relative effect of seeding rate vs prior years yield.
+
+```{r,fig.width=6,fig.height=6}
+Maps18 <- data.frame(Easting=c(seeding2018.dat$Easting, seeding2018.dat$Easting, seeding2018.dat$Easting),
+                   Northing=c(seeding2018.dat$Northing,seeding2018.dat$Northing,seeding2018.dat$Northing),
+                   Value=c(seeding2018.dat$Y17Rank,seeding2018.dat$Y18Rank,seeding2018.dat$RateRank),
+                   Map=c(rep('Yield 2017 (Seeding Grid)',length(seeding2018.dat$Y17Rank)),
+                         rep('Yield 2018',length(seeding2018.dat$Y18Rank)),
+                         rep('Seeding 2018',length(seeding2018.dat$RateRank))))
+ggplot(Maps18, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield and Seeding Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+```{r}
+estimatedyieldAR18.gam <- gam(Y18 ~ s(AR18), data=seeding2018.dat)
+estimatedyield17.gam <- gam(Y18 ~ s(Y17), data=seeding2018.dat)
+estimatedyield18comb.gam <- gam(Y18 ~ s(AR18)+ s(Y17), data=seeding2018.dat)
+```
+
+```{r}
+summary(estimatedyieldAR18.gam)
+summary(estimatedyield17.gam)
+summary(estimatedyield18comb.gam)
+```
+
+
+```{r,fig.width=6,fig.height=6}
+Maps20 <- data.frame(Easting=c(seeding2020.dat$Easting,seeding2020.dat$Easting,seeding2020.dat$Easting),
+                   Northing=c(seeding2020.dat$Northing,seeding2020.dat$Northing,seeding2020.dat$Northing),
+                   Value=c(seeding2020.dat$Y19Rank,seeding2020.dat$Y20Rank,seeding2020.dat$RateRank),
+                   Map=c(rep('Yield 2019',length(seeding2020.dat$Y19Rank)),
+                         rep('Yield 2020',length(seeding2020.dat$Y20Rank)),
+                         rep('Seeding 2020',length(seeding2020.dat$RateRank))))
+ggplot(Maps20, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield and Seeding Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+```{r}
+estimatedyieldAR20.gam <- gam(Y20 ~ s(AR20), data=seeding2020.dat)
+estimatedyield19.gam <- gam(Y20 ~ s(Y19), data=seeding2020.dat)
+estimatedyield20comb.gam <- gam(Y20 ~ s(AR20)+ s(Y19), data=seeding2020.dat)
+```
+
+```{r}
+summary(estimatedyieldAR20.gam)
+summary(estimatedyield19.gam)
+summary(estimatedyield20comb.gam)
+```
+
+# Bayesian Network
+
+## Seeding and yield plots
+
+```{r,fig.width=6,fig.height=6}
+Maps1720 <- data.frame(Easting=c(seeding2020.dat$Easting,seeding2020.dat$Easting,seeding2020.dat$Easting,seeding2020.dat$Easting),
+                   Northing=c(seeding2020.dat$Northing,seeding2020.dat$Northing,seeding2020.dat$Northing,seeding2020.dat$Northing),
+                   Value=c(seeding2020.dat$Y17Rank,seeding2020.dat$Y18Rank,seeding2020.dat$Y19Rank,seeding2020.dat$Y20Rank),
+                   Map=c(rep('Yield 2017',length(seeding2020.dat$Y17Rank)),
+                         rep('Yield 2018',length(seeding2020.dat$Y18Rank)),
+                         rep('Yield 2019',length(seeding2020.dat$Y19Rank)),
+                         rep('Yield 2020',length(seeding2020.dat$Y20Rank))))
+ggplot(Maps1720, aes(Easting,Northing)) + 
+geom_point(aes(colour = Value),size=0.5) + 
+scale_colour_gradient2(low=vermillion, mid=yellow, high=blue, midpoint = 0.5) +
+labs(colour = "Relative Rank", x="Easting", y="Northing", title = "Yield (2017-2020) Maps") + facet_wrap(~ Map,nrow=2)
+```
+
+
+
+
+
+```{r,fig.width=8,fig.height=10}
+par(mfrow=c(3,2))
+plot(Y17~ AppliedRate, data= seeding2018.dat, pch='.')
+plot(AppliedRate~ Y17, data= seeding2018.dat, pch='.')
+plot(Y18 ~ Y17, data= seeding2018.dat, pch='.')
+plot(Y17 ~ Y16, data= seeding2018.dat, pch='.')
+plot(Y16 ~ Y15, data= seeding2018.dat, pch='.')
+```
+
+```{r}
+yield15.gam <- gam(Y16 ~ s(Y15), data=seeding2018.dat)
+yield16.gam <- gam(Y17 ~ s(Y16), data=seeding2018.dat)
+pointyield.gam <- gam(PY18 ~ s(AppliedRate), data=seeding2018.dat)
+
+yield17ar.gam <- gam(AppliedRate ~ s(Y17), data=seeding2018.dat)
+yield17.gam <- gam(Y18 ~ s(Y17), data=seeding2018.dat)
+comb17.gam <- gam(Y18 ~ s(Y17)+s(AppliedRate), data=seeding2018.dat)
+summary(yield15.gam)
+summary(yield16.gam)
+summary(pointyield.gam)
+summary(yield17ar.gam)
+summary(yield17.gam)
+summary(comb17.gam)
+```
+
+```{r,fig.width=8,fig.height=10}
+par(mfrow=c(3,2))
+plot(pointyield.gam)
+plot(yield17ar.gam)
+plot(yield17.gam)
+plot(comb17.gam)
+```
+
+```{r,fig.width=8,fig.height=10}
+par(mfrow=c(3,2))
+plot(Y20 ~ Y18, data= seeding2020.dat, pch='.')
+plot(Y19 ~ Y18, data= seeding2020.dat, pch='.')
+
+plot(Y19~ AppliedRate, data= seeding2020.dat, pch='.')
+plot(AppliedRate ~ Y19, data= seeding2020.dat, pch='.')
+#plot(Y20 ~ AVG, data= seeding2020.dat, pch='.')
+#plot(Y19 ~ AVG, data= seeding2020.dat, pch='.')
+#plot(Y18 ~ AVG, data= seeding2020.dat, pch='.')
+#plot(Y17 ~ AVG, data= seeding2020.dat, pch='.')
+#plot(Y16 ~ AVG, data= seeding2020.dat, pch='.')
+#plot(Y15 ~ AVG, data= seeding2020.dat, pch='.')
+#plot(AppliedRate ~ AVG, data= seeding2020.dat, pch='.')
+```
+
+```{r}
+pastcorn.gam <- gam(Y20 ~ s(Y18), data=seeding2020.dat)
+pastyield.gam <- gam(Y19 ~ s(Y18), data=seeding2020.dat)
+
+#Y20ARAVG.gam <- gam(Y20 ~ s(AppliedRate)+ s(AVG), data=seeding2020.dat)
+yield19ar.gam <- gam(AppliedRate ~ s(Y19), data=seeding2020.dat)
+#yield19avg.gam <- gam(AppliedRate ~ s(Y19) + s(AVG), data=seeding2020.dat)
+yield19.gam <- gam(Y20 ~ s(Y19), data=seeding2020.dat)
+comb19.gam <- gam(Y20 ~ s(AppliedRate)+s(Y19), data=seeding2020.dat)
+comb18.gam <- gam(Y20 ~ s(AppliedRate)+s(Y19)+s(Y18), data=seeding2020.dat)
+
+summary(pastcorn.gam)
+summary(pastyield.gam)
+
+#summary(Y20ARAVG.gam)
+summary(yield19ar.gam)
+#summary(yield19avg.gam)
+summary(yield19.gam)
+summary(comb19.gam)
+summary(comb18.gam)
+```
+
+```{r,fig.width=8,fig.height=12}
+par(mfrow=c(4,2))
+plot(pastcorn.gam)
+plot(pastyield.gam)
+plot(yield19ar.gam)
+#plot(yield19avg.gam)
+plot(yield19.gam)
+plot(comb19.gam)
+plot(comb18.gam)
+```
+
+
+
+
+```{r,eval=FALSE}
+if(!file.exists('Stan.Rda')) {
+  AR17Y18.brms <- brm(Y18 ~ s(AR18),data=seeding2018.dat)
+  save(AR17Y18.brms,file='Stan.Rda')
+} else {
+  load(file='Stan.Rda')
+}
+
+summary(fit.brms)
+#plot(fit.brms)
+
+summary(brms65)
+#plot(brms100)
+
+summary(brms116)
+
+summary(brms320)
+```
+
+# Extra Plots
+
+```{r}
+tmp1 <- seeding2018.dat[,c("AR18","PY17")]
+names(tmp1) <- c("Applied","Yield")
+tmp1$Estimate = "Point"
+
+tmp2 <- seeding2018.dat[,c("AR18","Y17")]
+names(tmp2) <- c("Applied","Yield")
+tmp2$Estimate = "Areal"
+
+plotAR18 <- rbind(tmp1, tmp2)
+ggplot(plotAR18, aes(Yield, Applied)) + 
+geom_point(size=0.5,color=grey)+
+labs(colour = "Relative Rank", x="2017 Yield Estimate", y="2018 Applied Rate", title = "Mapping Yield to Seeding Points") + facet_wrap(~ Estimate)
+```
+
+```{r}
+tmp1 <- seeding2018.dat[,c("AR18","PY18")]
+names(tmp1) <- c("Applied","Yield")
+tmp1$Estimate = "Point"
+
+tmp2 <- seeding2018.dat[,c("AR18","Y18")]
+names(tmp2) <- c("Applied","Yield")
+tmp2$Estimate = "Areal"
+
+plotAR18 <- rbind(tmp1, tmp2)
+ggplot(plotAR18, aes(Applied,Yield)) + 
+geom_point(size=0.5,color=grey)+
+labs(colour = "Relative Rank", x="Applied Rate", y="Yield Estimate", title = "Mapping Yield to Seeding Points") + facet_wrap(~ Estimate)
+```
+
+```{r}
+tmp1 <- seeding2018.dat[,c("Y18","PY18")]
+names(tmp1) <- c("Areal","Point")
+tmp1$Year = "2018"
+
+tmp2 <- seeding2020.dat[,c("Y20","PY20")]
+names(tmp2) <- c("Areal","Point")
+tmp2$Year = "2020"
+
+plotAreal <- rbind(tmp1, tmp2)
+ggplot(plotAreal, aes(Point,Areal)) + 
+geom_point(size=0.5,color=grey)+
+labs(colour = "Relative Rank", x="Point Estimate", y="Areal Estimate", title = "Mapping Yield to Seeding Points") + facet_wrap(~ Year)
+```
+
+```{r}
+tmp1 <- seeding2018.dat[,c("Y18","PY18")]
+names(tmp1) <- c("Areal","Point")
+tmp1$Year = "2018"
+
+tmp2 <- seeding2020.dat[,c("Y20","PY20")]
+names(tmp2) <- c("Areal","Point")
+tmp2$Year = "2020"
+
+plotAreal <- rbind(tmp1, tmp2)
+ggplot(plotAreal, aes(Point,Areal)) + 
+geom_point(size=0.5,color=grey)+
+labs(colour = "Relative Rank", x="Point Estimate", y="Areal Estimate", title = "Mapping Yield to Seeding Points") + facet_wrap(~ Year)
+```
+
+```{r}
+tmp1 <- seeding2018.dat[,c("Y18","PY18")]
+names(tmp1) <- c("Areal","Point")
+tmp1$Year = "2018"
+
+tmp2 <- seeding2020.dat[,c("Y20","PY20")]
+names(tmp2) <- c("Areal","Point")
+tmp2$Year = "2020"
+
+plotAreal <- rbind(tmp1, tmp2)
+ggplot(plotAreal, aes(Point,Areal)) + 
+geom_point(size=0.5,color=grey)+
+labs(colour = "Relative Rank", x="Point Estimate", y="Areal Estimate", title = "Mapping Yield to Seeding Points") + facet_wrap(~ Year)
+```
+
+```{r}
+tmp1 <- seeding2020.dat[,c("AR20","PY20")]
+names(tmp1) <- c("Applied","Yield")
+tmp1$Estimate = "Point"
+
+tmp2 <- seeding2020.dat[,c("AR20","Y20")]
+names(tmp2) <- c("Applied","Yield")
+tmp2$Estimate = "Areal"
+
+plotAR20 <- rbind(tmp1, tmp2)
+ggplot(plotAR20, aes(Applied,Yield)) + 
+geom_point(size=0.5,color=grey)+
+labs(colour = "Relative Rank", x="Applied Rate", y="Yield Estimate", title = "Mapping Yield to Seeding Points") + facet_wrap(~ Estimate)
+```
