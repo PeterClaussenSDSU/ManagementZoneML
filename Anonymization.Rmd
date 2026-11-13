@@ -15,7 +15,7 @@ The files were typically exported from `myjohndeere.deere.com` with longer file 
 
 The file name also includes `Seeding` or `Harvest`, depending on the farming process associated with each data set.
 
-In the past, the data included 7 `channels` per sample, but more recent exports aggregate time samples. I've kept some of the older file formats in `Channels` folders on my machine. The files in these projects should not have channel data. We call the two functions `aggregate.seed.fn` and `aggregate.harvest.fn` to aggregate multiple channels to a single yield value.
+In the past, the data included 7 `channels` per sample, but more recent exports aggregate time samples. I've kept some of the older file formats in `Channels` folders on my machine. (Update 10/21/25 - I deleted the Channels) The files in these projects should not have channel data. We call the two functions `aggregate.seed.fn` and `aggregate.harvest.fn` to aggregate multiple channels to a single yield value.
 
 The `add.metric` function further anonymizes the data by converting GPS coordinates from distance in `Easting` and `Northing` from a common origin; the common origin is shared among different fields that are grouped in space, usually in the same mile-square section.
 
@@ -142,19 +142,18 @@ for(g in 1:length(tables)) {
   for(f in 1:length(current.fields)) {
     current.dat <- current.fields[[f]]
     if(!is.null(current.fields[[f]])) {
-      current.dat <- add.metric(current.dat,origin)
-      #plot.gps.grids(current.dat,plots=0,residuals=TRUE)
-    
       out.activity <- attr(current.dat,'activity')
       crop <- attr(current.dat,'crop')
       year <- attr(current.dat,'year')
       code <- attr(current.dat,'code')
 
-      out.path <-  paste(out.dir,code,sep='/')
+      out.path <- paste(out.dir,code,sep='/')
       out.path <- paste(out.path,year,crop,out.activity,sep=' ')
       out.path <- paste(out.path,'csv',sep='.')
       print(out.path)
-    
+      
+      current.dat <- add.metric(current.dat,origin)
+      #plot.gps.grids(current.dat,plots=0,residuals=TRUE)
       if(out.activity=='Seeding') {
           try(write.csv(current.dat[,seeding.columns],file=out.path))
       } else {
@@ -188,6 +187,10 @@ geom_point(aes(colour = Block),size=1)
 
 
 For some reason, I have a few csv files with different column headers. I can't remember, perhaps I exported from SMS?
+
+It seems that seeding rate for later years was changed to include more lines; perhaps each seeder head has it's own recording?
+
+Some files had to be modified manually to change, for example, 'AppliedRat' to 'AppliedRate'.
 
 
 
